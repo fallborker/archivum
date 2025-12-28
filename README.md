@@ -132,3 +132,8 @@ Image i4 = Archivum.Get<Image>("fileK"); // NO! Will throw an ArgumentException.
 ## License
 
 This library is licensed to you under the BSD 3-clause license.
+
+## Additional notes
+
+This project was hacked together in a single saturday, and it is currently 2:52AM on a sunday as I am writing this README because NuGet whines if you dont add one...
+That is to say that this lib is not in a finished state, and I don't really know if it will ever be. I made this for my own enjoyment and published it to see how the process works. Hopefully it is of good use to you, stanger! :D
