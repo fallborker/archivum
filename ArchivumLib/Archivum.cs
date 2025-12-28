@@ -1,0 +1,239 @@
+﻿using System.Buffers.Binary;
+using System.IO.Compression;
+using System.Linq.Expressions;
+using System.Reflection;
+using System.Text;
+
+namespace ArchivumLib;
+
+public static class Archivum
+{
+    private static bool _isSetup;
+    private static long _contentOffset;
+    private static string _fullFileName;
+    private static Dictionary<string, ArchivumDescriptor> _table = new Dictionary<string, ArchivumDescriptor>();
+    private static Dictionary<Type, Delegate> _resolverDelegateTable = new Dictionary<Type, Delegate>();
+
+    private static void CheckSetup()
+    {
+        if (!_isSetup)
+        {
+            throw new ArchivumSetUpException();
+        }
+    }
+
+    private static int ReadInt32(Stream s)
+    {
+        const int int32Size = 4;
+
+        Span<byte> buf = stackalloc byte[int32Size];
+        s.ReadExactly(buf);
+
+        return BinaryPrimitives.ReadInt32LittleEndian(buf);
+    }
+
+    private static long ReadInt64(Stream s)
+    {
+        const int int64Size = 8;
+
+        Span<byte> buf = stackalloc byte[int64Size];
+        s.ReadExactly(buf);
+
+        return BinaryPrimitives.ReadInt64LittleEndian(buf);
+    }
+
+    private static byte[] ReadBytes(Stream s)
+    {
+        int totalLen = ReadInt32(s);
+
+        byte[] bytes = new byte[totalLen];
+        s.ReadExactly(bytes);
+
+        return bytes;
+    }
+
+    private static string ReadString(Stream s)
+    {
+        byte[] bytes = ReadBytes(s);
+
+        return Encoding.UTF8.GetString(bytes);
+    }
+
+    private static ArchivumDescriptor ReadArchivumDescriptor(Stream s)
+    {
+        return new ArchivumDescriptor
+        {
+            Size = ReadInt64(s),
+            Offset = ReadInt64(s),
+            Name = ReadString(s)
+        };
+    }
+
+    private static void LoadContentInformation()
+    {
+        using FileStream fs = File.OpenRead(_fullFileName);
+
+        int totalFileCount = ReadInt32(fs);
+        _ = ReadInt32(fs); // Table size in bytes
+
+        for (int i = 0; i < totalFileCount; i++)
+        {
+            ArchivumDescriptor desc = ReadArchivumDescriptor(fs);
+            _table.Add(desc.Name, desc);
+        }
+
+        _ = ReadInt32(fs); // Content size in bytes
+
+        _contentOffset = fs.Position;
+    }
+
+    private static void CreateResolverDictionary(IArchivumResolver resolver)
+    {
+        var methods = resolver.GetType()
+            .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
+            .Where(m =>
+                m.DeclaringType != typeof(object) &&
+                m.GetParameters().Length == 2 &&
+                m.GetParameters()[0].ParameterType == typeof(ArchivumDescriptor) &&
+                m.GetParameters()[1].ParameterType == typeof(byte[])
+            );
+
+        foreach (var method in methods)
+        {
+            var returnType = method.ReturnType;
+
+            if (_resolverDelegateTable.ContainsKey(returnType))
+            {
+                throw new InvalidOperationException($"Duplicate resolver for type {returnType.Name}");
+            }
+
+            ParameterExpression descParam = Expression.Parameter(typeof(ArchivumDescriptor), "descriptor");
+            ParameterExpression bytesParam = Expression.Parameter(typeof(byte[]), "bytes");
+
+            MethodCallExpression call = Expression.Call(
+                Expression.Constant(resolver), // instance
+                method,
+                descParam,
+                bytesParam
+            );
+
+            Type funcType = typeof(Func<,,>).MakeGenericType(typeof(ArchivumDescriptor), typeof(byte[]), returnType);
+            Delegate typedDelegate = Expression.Lambda(funcType, call, descParam, bytesParam).Compile();
+
+            _resolverDelegateTable[returnType] = typedDelegate;
+        }
+
+        {
+            ParameterExpression descParam = Expression.Parameter(typeof(ArchivumDescriptor), "descriptor");
+            ParameterExpression bytesParam = Expression.Parameter(typeof(byte[]), "bytes");
+
+            MethodInfo undefinedMethod = resolver.GetType().GetMethod(
+                "ResolveUndefined",
+                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic
+            ) ?? throw new InvalidOperationException("Resolver must have a ResolveUndefined method");
+
+            MethodCallExpression call = Expression.Call(
+                Expression.Constant(resolver),
+                undefinedMethod,
+                descParam,
+                bytesParam
+            );
+
+            Delegate fallbackDelegate = Expression.Lambda<Func<ArchivumDescriptor, byte[], object>>(
+                call,
+                descParam,
+                bytesParam
+            ).Compile();
+
+            _resolverDelegateTable[typeof(object)] = fallbackDelegate;
+        }
+    }
+
+    public static void Setup(string fileName, string fileExtension, IArchivumResolver resolver)
+    {
+        if (_isSetup)
+        {
+            throw new ArchivumSetUpException();
+        }
+
+        char[] invalidOSPathChars = Path.GetInvalidFileNameChars();
+
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            throw new ArgumentException("The file name must not be empty!", nameof(fileName));
+        }
+
+        if (fileName.IndexOfAny(invalidOSPathChars) > 0 || fileExtension.IndexOfAny(invalidOSPathChars) > 0)
+        {
+            throw new ArgumentException("The file name or its extension must not contain invalid characters!");
+        }
+
+        string treatedFileName = fileName.Trim();
+        string treatedFileExt = !string.IsNullOrWhiteSpace(fileExtension) ? $".{fileExtension.Trim().Replace(".", "")}" : "";
+
+        _fullFileName = $"{treatedFileName}{treatedFileExt}";
+
+        CreateResolverDictionary(resolver);
+        LoadContentInformation();
+
+        _isSetup = true;
+    }
+
+    public static T Get<T>(string name)
+    {
+        CheckSetup();
+
+        if (!_table.ContainsKey(name))
+        {
+            throw new ArgumentException($"The key \"{name}\" does not exist in the content file!");
+        }
+
+        ArchivumDescriptor descriptor = _table[name];
+
+        using (FileStream fs = File.OpenRead(_fullFileName))
+        using (MemoryStream decompressed = new MemoryStream())
+        {
+            byte[] bytes = new byte[descriptor.Size];
+
+            fs.Position = _contentOffset;
+            fs.ReadExactly(bytes, 0, (int)descriptor.Size);
+
+            using (MemoryStream compressed = new MemoryStream(bytes))
+            using (GZipStream gzip = new GZipStream(compressed, CompressionMode.Decompress, leaveOpen: true))
+            {
+                gzip.CopyTo(decompressed);
+            }
+
+            byte[] decompressedBytes = decompressed.ToArray();
+            if (_resolverDelegateTable.TryGetValue(typeof(T), out var typeDelegate))
+            {
+                return ((Func<ArchivumDescriptor, byte[], T>)typeDelegate)(descriptor, decompressedBytes);
+            }
+
+            var fallback = (Func<ArchivumDescriptor, byte[], object>)_resolverDelegateTable[typeof(object)];
+            return (T)fallback(descriptor, decompressedBytes);
+        }
+    }
+
+    public static bool TryGet<T>(string name, out T value)
+    {
+        CheckSetup();
+
+        if (!_table.ContainsKey(name))
+        {
+            value = default;
+            return false;
+        }
+
+        value = Get<T>(name);
+        return true;
+    }
+
+    public static void Generate(string sourceFolder, string[] extensionWhitelist)
+    {
+        CheckSetup();
+
+        ArchivumGenerator generator = new ArchivumGenerator(sourceFolder, _fullFileName, extensionWhitelist);
+        generator.Generate();
+    }
+}
