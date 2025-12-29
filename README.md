@@ -84,56 +84,56 @@ To generate a file for the first time, you can wrap the above [setup](#setup) ca
 // compiled with Release, as to not ship with any unnecessary code.
 #if DEBUG
 
-        // The content file will be read when any get method is
-        // called for the first time.
-        Archivum.Setup("MyContentFileName", "MyCoolExtension", new BasicResolver(), readFileOnSetup: false);
+    // The content file will be read when any get method is
+    // called for the first time.
+    Archivum.Setup("MyContentFileName", "MyCoolExtension", new BasicResolver(), readFileOnSetup: false);
 
-        Console.WriteLine("Generate content? (Type in the path to a source folder or leave blank)");
-        string input = Console.ReadLine();
+    Console.WriteLine("Generate content? (Type in the path to a source folder or leave blank)");
+    string input = Console.ReadLine();
 
-        // If we have the following source folder structure:
-        //
-        // Content
-        //  |__ fileA.png
-        //  |__ fileB.txt (will be ignored, .txt is not whitelisted)
-        //  |
-        //  |__ SubFolder1
-        //  |   |__ fileC.ogg
-        //  |   |__ fileD.png
-        //  |
-        //  |__ SubFolder2
-        //  |   |__ fileE.pdf (will be ignored, .pdf is not whitelisted)
-        //  |
-        //  |__ SubFolder3
-        //      |__ fileF.png
-        //      |
-        //      |__ SubFolder4
-        //      |   |__ <empty>
-        //      |
-        //      |__ SubFolder5
-        //          |__ fileG.png
-        //
-        // The following tags will be accepted in Get and TryGet:
-        // | fileA
-        // | SubFolder1/fileC
-        // | SubFolder1/fileD
-        // | SubFolder3/fileF
-        // | SubFolder3/SubFolder5/fileG
-        string[] extWhitelist = [
-            ".png",
-            ".ogg",
-        ];
+    // If we have the following source folder structure:
+    //
+    // Content
+    //  |__ fileA.png
+    //  |__ fileB.txt (will be ignored, .txt is not whitelisted)
+    //  |
+    //  |__ SubFolder1
+    //  |   |__ fileC.ogg
+    //  |   |__ fileD.png
+    //  |
+    //  |__ SubFolder2
+    //  |   |__ fileE.pdf (will be ignored, .pdf is not whitelisted)
+    //  |
+    //  |__ SubFolder3
+    //      |__ fileF.png
+    //      |
+    //      |__ SubFolder4
+    //      |   |__ <empty>
+    //      |
+    //      |__ SubFolder5
+    //          |__ fileG.png
+    //
+    // The following tags will be accepted in Get and TryGet:
+    // | fileA
+    // | SubFolder1/fileC
+    // | SubFolder1/fileD
+    // | SubFolder3/fileF
+    // | SubFolder3/SubFolder5/fileG
+    string[] extWhitelist = [
+        ".png",
+        ".ogg",
+    ];
 
-        if (!string.IsNullOrWhiteSpace(input))
-        {
-            input = input.Replace("\"", "").Replace("'", "").Trim();
-            Archivum.Generate(input, extWhitelist);
-        }
+    if (!string.IsNullOrWhiteSpace(input))
+    {
+        input = input.Replace("\"", "").Replace("'", "").Trim();
+        Archivum.Generate(input, extWhitelist);
+    }
 
 #else
 
-        // Do the setup normally!
-        Archivum.Setup("MyContentFileName", "MyCoolExtension", new BasicResolver());
+    // Do the setup normally!
+    Archivum.Setup("MyContentFileName", "MyCoolExtension", new BasicResolver());
 
 #endif
 ```
