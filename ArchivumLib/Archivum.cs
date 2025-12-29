@@ -10,7 +10,7 @@ public static class Archivum
 {
     private static bool _isSetup;
     private static long _contentOffset;
-    private static string _fullFileName;
+    private static string _fullFileName = "";
     private static Dictionary<string, ArchivumDescriptor> _table = new Dictionary<string, ArchivumDescriptor>();
     private static Dictionary<Type, Delegate> _resolverDelegateTable = new Dictionary<Type, Delegate>();
 
@@ -87,6 +87,14 @@ public static class Archivum
         _contentOffset = fs.Position;
     }
 
+    private static void LoadContentInformationIfNotLoaded()
+    {
+        if (_table.Keys.Count == 0)
+        {
+            LoadContentInformation();
+        }
+    }
+
     private static void CreateResolverDictionary(IArchivumResolver resolver)
     {
         var methods = resolver.GetType()
@@ -149,7 +157,41 @@ public static class Archivum
         }
     }
 
-    public static void Setup(string fileName, string fileExtension, IArchivumResolver resolver)
+    private static byte[] UnsafeGet(ArchivumDescriptor descriptor)
+    {
+        using (FileStream fs = File.OpenRead(_fullFileName))
+        using (MemoryStream decompressed = new MemoryStream())
+        {
+            byte[] bytes = new byte[descriptor.Size];
+
+            fs.Position = _contentOffset;
+            fs.ReadExactly(bytes, 0, (int)descriptor.Size);
+
+            using (MemoryStream compressed = new MemoryStream(bytes))
+            using (GZipStream gzip = new GZipStream(compressed, CompressionMode.Decompress, leaveOpen: true))
+            {
+                gzip.CopyTo(decompressed);
+            }
+
+            return decompressed.ToArray();
+        }
+    }
+
+    private static bool UnsafeTryGet(string name, out byte[]? bytes)
+    {
+        if (!_table.ContainsKey(name))
+        {
+            bytes = null;
+            return false;
+        }
+
+        ArchivumDescriptor descriptor = _table[name];
+
+        bytes = UnsafeGet(descriptor);
+        return true;
+    }
+
+    public static void Setup(string fileName, string fileExtension, IArchivumResolver resolver, bool readFileOnSetup = true)
     {
         if (_isSetup)
         {
@@ -174,14 +216,19 @@ public static class Archivum
         _fullFileName = $"{treatedFileName}{treatedFileExt}";
 
         CreateResolverDictionary(resolver);
-        LoadContentInformation();
+
+        if (readFileOnSetup)
+        {
+            LoadContentInformation();
+        }
 
         _isSetup = true;
     }
 
-    public static T Get<T>(string name)
+    public static byte[] Get(string name)
     {
         CheckSetup();
+        LoadContentInformationIfNotLoaded();
 
         if (!_table.ContainsKey(name))
         {
@@ -190,34 +237,44 @@ public static class Archivum
 
         ArchivumDescriptor descriptor = _table[name];
 
-        using (FileStream fs = File.OpenRead(_fullFileName))
-        using (MemoryStream decompressed = new MemoryStream())
-        {
-            byte[] bytes = new byte[descriptor.Size];
-
-            fs.Position = _contentOffset;
-            fs.ReadExactly(bytes, 0, (int)descriptor.Size);
-
-            using (MemoryStream compressed = new MemoryStream(bytes))
-            using (GZipStream gzip = new GZipStream(compressed, CompressionMode.Decompress, leaveOpen: true))
-            {
-                gzip.CopyTo(decompressed);
-            }
-
-            byte[] decompressedBytes = decompressed.ToArray();
-            if (_resolverDelegateTable.TryGetValue(typeof(T), out var typeDelegate))
-            {
-                return ((Func<ArchivumDescriptor, byte[], T>)typeDelegate)(descriptor, decompressedBytes);
-            }
-
-            var fallback = (Func<ArchivumDescriptor, byte[], object>)_resolverDelegateTable[typeof(object)];
-            return (T)fallback(descriptor, decompressedBytes);
-        }
+        return UnsafeGet(descriptor);
     }
 
-    public static bool TryGet<T>(string name, out T value)
+    public static bool TryGet(string name, out byte[]? bytes)
     {
         CheckSetup();
+        LoadContentInformationIfNotLoaded();
+
+        return UnsafeTryGet(name, out bytes);
+    }
+
+    public static T Get<T>(string name)
+    {
+        CheckSetup();
+        LoadContentInformationIfNotLoaded();
+
+        if (!_table.ContainsKey(name))
+        {
+            throw new ArgumentException($"The key \"{name}\" does not exist in the content file!");
+        }
+
+        ArchivumDescriptor descriptor = _table[name];
+
+        byte[] bytes = UnsafeGet(descriptor);
+
+        if (_resolverDelegateTable.TryGetValue(typeof(T), out var typeDelegate))
+        {
+            return ((Func<ArchivumDescriptor, byte[], T>)typeDelegate)(descriptor, bytes);
+        }
+
+        var fallback = (Func<ArchivumDescriptor, byte[], object>)_resolverDelegateTable[typeof(object)];
+        return (T)fallback(descriptor, bytes);
+    }
+
+    public static bool TryGet<T>(string name, out T? value)
+    {
+        CheckSetup();
+        LoadContentInformationIfNotLoaded();
 
         if (!_table.ContainsKey(name))
         {
@@ -235,5 +292,14 @@ public static class Archivum
 
         ArchivumGenerator generator = new ArchivumGenerator(sourceFolder, _fullFileName, extensionWhitelist);
         generator.Generate();
+    }
+
+    public static void Reset()
+    {
+        _table.Clear();
+        _resolverDelegateTable.Clear();
+        _fullFileName = "";
+        _contentOffset = 0;
+        _isSetup = false;
     }
 }

@@ -32,23 +32,26 @@ The basic structure of the file as of December, 2025 is:
 EOF
 ```
 
-> \* The offset starts counting from 0 right after the end of the header content. Therefore, Offset is not an absolute value.
+> \*: The offset starts counting from 0 right after the end of the header content. Therefore, Offset is not an absolute value.
 
-## Usage
+## Setup
 
-A small example of usage can be seen here, in which a content file can be generated in the Debug build and used in all other targets:
+These are the minimum necessary steps to load a [generated](#generation) content file into your application:
 
 ```csharp
-using Raylib_cs;
+using ArchivumLib;
 
 // Resolver
 // A resolver is a class containing methods that are going to be
-// used by the main class in order to know how to cast the byte
+// used by the Archivum class in order to know how to cast the byte
 // arrays properly. In case a resolution method is not found,
 // ResolveUndefined will be called.
 //
 // In this example, I'm using Raylib-cs methods to demonstrate how
 // This would be used normally.
+
+using Raylib_cs;
+
 internal class BasicResolver : IArchivumResolver
 {
     public void ThisMethodWillBeIgnored(int a) {}
@@ -65,38 +68,50 @@ internal class BasicResolver : IArchivumResolver
 
 // [...] public static int Main() [...]
 
-// This will generate MyContentFileName.MyCoolExtension at the CWD.
+// This will load MyContentFileName.MyCoolExtension from the CWD.
+// The file name is mandatory, but the extension can be left blank by either
+// passing "" or null.
 Archivum.Setup("MyContentFileName", "MyCoolExtension", new BasicResolver());
+```
 
+## Generation
+
+To generate a file for the first time, you can wrap the above [setup](#setup) call with the following conditional guards:
+
+```csharp
 // Calling Archivum.Generate in Release will throw an exception.
-// The method body and all its fields are not generated in Release,
-// as to not ship with any unnecessary code.
+// ArchivumGenerator's whole body and all of its fields are not
+// compiled with Release, as to not ship with any unnecessary code.
 #if DEBUG
 
-        Console.WriteLine("Generate content? (Type in the path to a source folder path or leave blank)");
+        // The content file will be read when any get method is
+        // called for the first time.
+        Archivum.Setup("MyContentFileName", "MyCoolExtension", new BasicResolver(), readFileOnSetup: false);
+
+        Console.WriteLine("Generate content? (Type in the path to a source folder or leave blank)");
         string input = Console.ReadLine();
 
         // If we have the following source folder structure:
         //
         // Content
-        //  |_ fileA.png
-        //  |_ fileB.txt (will be ignored, .txt is not whitelisted)
+        //  |__ fileA.png
+        //  |__ fileB.txt (will be ignored, .txt is not whitelisted)
         //  |
-        //  |_ SubFolder1
-        //  |   |_ fileC.ogg
-        //  |   |_ fileD.png
+        //  |__ SubFolder1
+        //  |   |__ fileC.ogg
+        //  |   |__ fileD.png
         //  |
-        //  |_ SubFolder2
-        //  |   |_ fileE.pdf (will be ignored, .pdf is not whitelisted)
+        //  |__ SubFolder2
+        //  |   |__ fileE.pdf (will be ignored, .pdf is not whitelisted)
         //  |
-        //  |_ SubFolder3
-        //      |_ fileF.png
+        //  |__ SubFolder3
+        //      |__ fileF.png
         //      |
-        //      |_ SubFolder4
-        //      |   |_ <empty>
+        //      |__ SubFolder4
+        //      |   |__ <empty>
         //      |
-        //      |_ SubFolder5
-        //          |_ fileG.png
+        //      |__ SubFolder5
+        //          |__ fileG.png
         //
         // The following tags will be accepted in Get and TryGet:
         // | fileA
@@ -115,15 +130,35 @@ Archivum.Setup("MyContentFileName", "MyCoolExtension", new BasicResolver());
             Archivum.Generate(input, extWhitelist);
         }
 
+#else
+
+        // Do the setup normally!
+        Archivum.Setup("MyContentFileName", "MyCoolExtension", new BasicResolver());
+
 #endif
+```
+
+## Loading content
+
+To access your content as objects inside C#, simply call one of the Get or TryGet methods. Do keep in mind that Get WILL throw an exception if the name of the content you are trying to access is not found within the file.
+
+```csharp
+// The generated file must be in the CWD for Get and TryGet to work.
 
 // [...]
-// The generated file must be in the CWD for loading to work.
 
-Image i = Archivum.Get<Image>("fileA"); // OK.
-bool fileAExists = Archivum.TryGet<Image>("fileA", out Image i2); // OK - TRUE.
-bool fileKExists = Archivum.TryGet<Image>("fileK", out Image i3); // OK - FALSE.
-Image i4 = Archivum.Get<Image>("fileK"); // NO! Will throw an ArgumentException.
+Image image;
+bool contentExists;
+
+image = Archivum.Get<Image>("fileA"); // OK.
+contentExists = Archivum.TryGet<Image>("fileA", out Image outImage1); // OK - TRUE.
+contentExists = Archivum.TryGet<Image>("fileK", out Image outImage2); // OK - FALSE.
+image = Archivum.Get<Image>("fileK"); // NO! Will throw an ArgumentException.
+
+// You can also get the raw data via Get and TryGet
+
+byte[] raw = Archivum.Get("fileA");
+contentExists = Archivum.TryGet("fileA", out byte[]? bytes);
 
 // Image objects from raylib in this example still need to be unloaded :)
 // They're unmanaged, folks!
