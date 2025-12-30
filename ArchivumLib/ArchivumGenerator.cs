@@ -6,8 +6,6 @@ namespace ArchivumLib;
 
 internal class ArchivumGenerator
 {
-#if DEBUG
-
     private readonly string _source;
     private readonly string _outputFileName;
     private readonly HashSet<string> _extWhitelist = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -134,15 +132,4 @@ internal class ArchivumGenerator
             }
         }
     }
-
-#else
-
-    public ArchivumGenerator(string sourceFolder, string outputFileName, string[] extensionWhitelist)
-    {
-        throw new ArchivumGenerationOutsideDebugException();
-    }
-
-    public void Generate() { /* Empty */ }
-
-#endif
 }

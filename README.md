@@ -79,9 +79,6 @@ Archivum.Setup("MyContentFileName", "MyCoolExtension", new BasicResolver());
 To generate a file for the first time, you can wrap the above [setup](#setup) call with the following conditional guards:
 
 ```csharp
-// Calling Archivum.Generate in Release will throw an exception.
-// ArchivumGenerator's whole body and all of its fields are not
-// compiled with Release, as to not ship with any unnecessary code.
 #if DEBUG
 
     // The content file will be read when any get method is
@@ -171,4 +168,4 @@ This library is licensed to you under the BSD 3-clause license.
 ## Additional notes
 
 This project was hacked together in a single saturday, and it is currently 2:52AM on a sunday as I am writing this README because NuGet whines if you dont add one...
-That is to say that this lib is not in a finished state, and I don't really know if it will ever be. I made this for my own enjoyment and published it to see how the process works. Hopefully it is of good use to you, stanger! :D
+That is to say that this lib is not in a finished state, and I don't really know if it will ever be. I made this for my own enjoyment and published it to see how the process works. Hopefully it is of good use to you, stranger! :D
