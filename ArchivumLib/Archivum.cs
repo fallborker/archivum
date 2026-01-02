@@ -3,13 +3,14 @@ using System.IO.Compression;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
+using static ArchivumLib.Constants;
 
 namespace ArchivumLib;
 
 public static class Archivum
 {
     private static bool _isSetup;
-    private static long _contentOffset;
+    private static long _dataOffset;
     private static string _fullFileName = "";
     private static Dictionary<string, ArchivumDescriptor> _table = new Dictionary<string, ArchivumDescriptor>();
     private static Dictionary<Type, Delegate> _resolverDelegateTable = new Dictionary<Type, Delegate>();
@@ -24,9 +25,7 @@ public static class Archivum
 
     private static int ReadInt32(Stream s)
     {
-        const int int32Size = 4;
-
-        Span<byte> buf = stackalloc byte[int32Size];
+        Span<byte> buf = stackalloc byte[INT_SIZE];
         s.ReadExactly(buf);
 
         return BinaryPrimitives.ReadInt32LittleEndian(buf);
@@ -34,9 +33,7 @@ public static class Archivum
 
     private static long ReadInt64(Stream s)
     {
-        const int int64Size = 8;
-
-        Span<byte> buf = stackalloc byte[int64Size];
+        Span<byte> buf = stackalloc byte[LONG_SIZE];
         s.ReadExactly(buf);
 
         return BinaryPrimitives.ReadInt64LittleEndian(buf);
@@ -69,29 +66,33 @@ public static class Archivum
         };
     }
 
-    private static void LoadContentInformation()
+    private static void LoadResourceInformation()
     {
-        using FileStream fs = File.OpenRead(_fullFileName);
-
-        int totalFileCount = ReadInt32(fs);
-        _ = ReadInt32(fs); // Table size in bytes
-
-        for (int i = 0; i < totalFileCount; i++)
+        using (FileStream fs = File.OpenRead(_fullFileName))
         {
-            ArchivumDescriptor desc = ReadArchivumDescriptor(fs);
-            _table.Add(desc.Name, desc);
+            // We discard the hash since there's not much use when loading
+            fs.ReadExactly(stackalloc byte[HASH_SIZE]);
+
+            int totalFileCount = ReadInt32(fs);
+            _ = ReadInt32(fs); // Table size in bytes
+
+            for (int i = 0; i < totalFileCount; i++)
+            {
+                ArchivumDescriptor desc = ReadArchivumDescriptor(fs);
+                _table.Add(desc.Name, desc);
+            }
+
+            _ = ReadInt32(fs); // Resource size
+
+            _dataOffset = fs.Position;
         }
-
-        _ = ReadInt32(fs); // Content size in bytes
-
-        _contentOffset = fs.Position;
     }
 
-    private static void LoadContentInformationIfNotLoaded()
+    private static void LoadResourceInformationIfNotLoaded()
     {
         if (_table.Keys.Count == 0)
         {
-            LoadContentInformation();
+            LoadResourceInformation();
         }
     }
 
@@ -164,7 +165,7 @@ public static class Archivum
         {
             byte[] bytes = new byte[descriptor.Size];
 
-            fs.Position = _contentOffset;
+            fs.Position = _dataOffset;
             fs.ReadExactly(bytes, 0, (int)descriptor.Size);
 
             using (MemoryStream compressed = new MemoryStream(bytes))
@@ -219,7 +220,7 @@ public static class Archivum
 
         if (readFileOnSetup)
         {
-            LoadContentInformation();
+            LoadResourceInformation();
         }
 
         _isSetup = true;
@@ -228,11 +229,11 @@ public static class Archivum
     public static byte[] Get(string name)
     {
         CheckSetup();
-        LoadContentInformationIfNotLoaded();
+        LoadResourceInformationIfNotLoaded();
 
         if (!_table.ContainsKey(name))
         {
-            throw new ArgumentException($"The key \"{name}\" does not exist in the content file!");
+            throw new ArgumentException($"The key \"{name}\" does not exist in the resource file!");
         }
 
         ArchivumDescriptor descriptor = _table[name];
@@ -243,7 +244,7 @@ public static class Archivum
     public static bool TryGet(string name, out byte[]? bytes)
     {
         CheckSetup();
-        LoadContentInformationIfNotLoaded();
+        LoadResourceInformationIfNotLoaded();
 
         return UnsafeTryGet(name, out bytes);
     }
@@ -251,11 +252,11 @@ public static class Archivum
     public static T Get<T>(string name)
     {
         CheckSetup();
-        LoadContentInformationIfNotLoaded();
+        LoadResourceInformationIfNotLoaded();
 
         if (!_table.ContainsKey(name))
         {
-            throw new ArgumentException($"The key \"{name}\" does not exist in the content file!");
+            throw new ArgumentException($"The key \"{name}\" does not exist in the resource file!");
         }
 
         ArchivumDescriptor descriptor = _table[name];
@@ -274,7 +275,7 @@ public static class Archivum
     public static bool TryGet<T>(string name, out T? value)
     {
         CheckSetup();
-        LoadContentInformationIfNotLoaded();
+        LoadResourceInformationIfNotLoaded();
 
         if (!_table.ContainsKey(name))
         {
@@ -299,7 +300,7 @@ public static class Archivum
         _table.Clear();
         _resolverDelegateTable.Clear();
         _fullFileName = "";
-        _contentOffset = 0;
+        _dataOffset = 0;
         _isSetup = false;
     }
 }

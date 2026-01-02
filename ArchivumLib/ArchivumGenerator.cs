@@ -1,6 +1,8 @@
 using System.Buffers.Binary;
 using System.Text;
 using System.IO.Compression;
+using System.Security.Cryptography;
+using static ArchivumLib.Constants;
 
 namespace ArchivumLib;
 
@@ -12,24 +14,20 @@ internal class ArchivumGenerator
 
     private int WriteInt32(Stream s, int value)
     {
-        const int int32Size = 4;
-
-        Span<byte> buf = stackalloc byte[int32Size];
+        Span<byte> buf = stackalloc byte[INT_SIZE];
         BinaryPrimitives.WriteInt32LittleEndian(buf, value);
         s.Write(buf);
 
-        return int32Size;
+        return INT_SIZE;
     }
 
     private int WriteInt64(Stream s, long value)
     {
-        const int int64Size = 8;
-
-        Span<byte> buf = stackalloc byte[int64Size];
+        Span<byte> buf = stackalloc byte[LONG_SIZE];
         BinaryPrimitives.WriteInt64LittleEndian(buf, value);
         s.Write(buf);
 
-        return int64Size;
+        return LONG_SIZE;
     }
 
     private int WriteBytes(Stream s, byte[] bytes)
@@ -75,7 +73,68 @@ internal class ArchivumGenerator
             throw new DirectoryNotFoundException();
         }
 
-        using (MemoryStream contentBytes = new MemoryStream())
+        byte[] computeHash;
+        try
+        {
+            StringBuilder hashSource = new StringBuilder();
+            foreach (string file in Directory.EnumerateFiles(_source, "*", SearchOption.AllDirectories).OrderBy(p => p, StringComparer.Ordinal))
+            {
+                FileInfo fileInfo = new FileInfo(file);
+
+                hashSource
+                    .Append(fileInfo.FullName)
+                    .Append(fileInfo.Length)
+                    .Append(fileInfo.LastWriteTimeUtc);
+            }
+
+            using (MD5 md5 = MD5.Create())
+            {
+                computeHash = md5.ComputeHash(Encoding.UTF8.GetBytes(hashSource.ToString()));
+            }
+        }
+        catch (Exception _)
+        {
+            Console.WriteLine("Could not calculate the hash due to an exception!");
+            throw;
+        }
+
+        // If a file already exists and we're changing it, we must first check if any changes are necessary.
+        bool fileExists = File.Exists(_outputFileName);
+        bool doNotGenerate = fileExists;
+        if (fileExists)
+        {
+            Span<byte> buffer = stackalloc byte[HASH_SIZE];
+
+            try
+            {
+                using (FileStream fs = File.OpenRead(_outputFileName))
+                {
+                    fs.ReadExactly(buffer);
+                }
+
+                for (int i = 0; i < HASH_SIZE; i++)
+                {
+                    if (computeHash[i] != buffer[i])
+                    {
+                        doNotGenerate = false;
+                        break;
+                    }
+                }
+            }
+            catch (Exception _)
+            {
+                Console.WriteLine("An internal error occurred while attempting to read the file hash. The file will be forcibly regenerated.");
+                doNotGenerate = false;
+            }
+        }
+
+        if (doNotGenerate)
+        {
+            Console.WriteLine("No changes were detected during the resource file generation. Skipping...");
+            return;
+        }
+
+        using (MemoryStream resourceBytes = new MemoryStream())
         using (MemoryStream tableBytes = new MemoryStream())
         {
             long offset = 0;
@@ -101,8 +160,8 @@ internal class ArchivumGenerator
                     gzip.Write(File.ReadAllBytes(file));
 
                     compressed.Position = 0;
-                    compressed.CopyTo(contentBytes);
-                
+                    compressed.CopyTo(resourceBytes);
+
                     long size = compressed.Length;
 
                     ArchivumDescriptor desc = new ArchivumDescriptor()
@@ -126,10 +185,14 @@ internal class ArchivumGenerator
 
             using (FileStream fs = File.Create(_outputFileName))
             {
+                fs.Write(computeHash, 0, computeHash.Length);
+
                 WriteInt32(fs, processedFileCount);
                 WriteBytes(fs, tableBytes.ToArray());
-                WriteBytes(fs, contentBytes.ToArray());
+                WriteBytes(fs, resourceBytes.ToArray());
             }
+
+            Console.WriteLine("Generated the resource file successfuly!");
         }
     }
 }

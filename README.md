@@ -2,12 +2,13 @@
 
 Archivum is meant to be a small, reflective library that allows you to pack an assortment of files in a single one. The name and extension of the file can be configured to your liking.
 
-The basic structure of the file as of December, 2025 is:
+The basic structure of the file is:
 
 ```
----------------------------------------------------------
+-----------------------------------------------------------
 | Header
----------------------------------------------------------
+-----------------------------------------------------------
+[16 bytes]      > [MD5 to check if generation is needed]
 [4 bytes]       > [Number of files that have been packed]
 [4 bytes]       > [Size X of the file table in bytes]
 [X bytes]       > [File table]
@@ -20,10 +21,10 @@ The basic structure of the file as of December, 2025 is:
  | [8 bytes]    > [Size of the Nth compressed file]
  | [8 bytes]    > [Offset* of the Nth compressed file]
  | [xN bytes]   > [Name/Tag of the Nth compressed file]
----------------------------------------------------------
+-----------------------------------------------------------
 | Body
----------------------------------------------------------
-[4 bytes]       > [Size Y of the content array in bytes]
+-----------------------------------------------------------
+[4 bytes]       > [Size Y of the resource array in bytes]
  | [x0 bytes]   > [1st Compressed file]
  .
  .
@@ -32,11 +33,11 @@ The basic structure of the file as of December, 2025 is:
 EOF
 ```
 
-> \*: The offset starts counting from 0 right after the end of the header content. Therefore, Offset is not an absolute value.
+> \*: The offset starts counting from 0 right after the end of the header data. Therefore, Offset is not an absolute value.
 
 ## Setup
 
-These are the minimum necessary steps to load a [generated](#generation) content file into your application:
+These are the minimum necessary steps to load a [generated](#generation) resource file into your application:
 
 ```csharp
 using ArchivumLib;
@@ -54,8 +55,13 @@ using Raylib_cs;
 
 internal class BasicResolver : IArchivumResolver
 {
-    public void ThisMethodWillBeIgnored(int a) {}
-    public int ThisMethodWillAlsoBeIgnored(int b, string c) => 0;
+    private int _thisFieldWillBeIgnored = 143;
+
+    public int ThisMethodWillBeIgnored(int b, string c) => 0;
+    private void ThisMethodWillAlsoBeIgnored(int a) {}
+
+    // Only methods with this specific signature will be read.
+    // public T AnyName(ArchivumDescriptor, byte[]);
 
     public Music ResolveMusic(ArchivumDescriptor _, byte[] bytes) => Raylib.LoadMusicStreamFromMemory(/* Extension here */, bytes);
     public Image ResolveImage(ArchivumDescriptor _, byte[] bytes) => Raylib.LoadImageFromMemory(/* Extension here */, bytes);
@@ -66,31 +72,29 @@ internal class BasicResolver : IArchivumResolver
     }
 }
 
-// [...] public static int Main() [...]
-
-// This will load MyContentFileName.MyCoolExtension from the CWD.
+// This will load MyResourceFileName.MyCoolExtension from the CWD.
 // The file name is mandatory, but the extension can be left blank by either
 // passing "" or null.
-Archivum.Setup("MyContentFileName", "MyCoolExtension", new BasicResolver());
+Archivum.Setup("MyResourceFileName", "MyCoolExtension", new BasicResolver());
 ```
 
 ## Generation
 
-To generate a file for the first time, you can wrap the above [setup](#setup) call with the following conditional guards:
+To generate a file for the first time, you can wrap the above [setup](#setup) call with the following conditional guards. The resource file contains a MD5 hash to check if generation is needed, and this step will be skipped if no file changes are detected.
 
 ```csharp
 #if DEBUG
 
-    // The content file will be read when any get method is
+    // The resource file will be read when any get method is
     // called for the first time.
-    Archivum.Setup("MyContentFileName", "MyCoolExtension", new BasicResolver(), readFileOnSetup: false);
+    Archivum.Setup("MyResourceFileName", "MyCoolExtension", new BasicResolver(), readFileOnSetup: false);
 
-    Console.WriteLine("Generate content? (Type in the path to a source folder or leave blank)");
+    Console.WriteLine("Generate resource file? (Type in the path to a source folder or leave blank)");
     string input = Console.ReadLine();
 
     // If we have the following source folder structure:
     //
-    // Content
+    // Resources
     //  |__ fileA.png
     //  |__ fileB.txt (will be ignored, .txt is not whitelisted)
     //  |
@@ -130,32 +134,28 @@ To generate a file for the first time, you can wrap the above [setup](#setup) ca
 #else
 
     // Do the setup normally!
-    Archivum.Setup("MyContentFileName", "MyCoolExtension", new BasicResolver());
+    Archivum.Setup("MyResourceFileName", "MyCoolExtension", new BasicResolver());
 
 #endif
 ```
 
-## Loading content
+## Loading resources
 
-To access your content as objects inside C#, simply call one of the Get or TryGet methods. Do keep in mind that Get WILL throw an exception if the name of the content you are trying to access is not found within the file.
+To access your resources as objects inside C#, simply call one of the Get or TryGet methods. Do keep in mind that Get WILL throw an exception if the name of the resource you are trying to access is not found within the file.
 
 ```csharp
-// The generated file must be in the CWD for Get and TryGet to work.
-
-// [...]
-
 Image image;
-bool contentExists;
+bool resourceExists;
 
 image = Archivum.Get<Image>("fileA"); // OK.
-contentExists = Archivum.TryGet<Image>("fileA", out Image outImage1); // OK - TRUE.
-contentExists = Archivum.TryGet<Image>("fileK", out Image outImage2); // OK - FALSE.
+resourceExists = Archivum.TryGet<Image>("fileA", out Image outImage1); // OK - TRUE.
+resourceExists = Archivum.TryGet<Image>("fileK", out Image outImage2); // OK - FALSE.
 image = Archivum.Get<Image>("fileK"); // NO! Will throw an ArgumentException.
 
 // You can also get the raw data via Get and TryGet
 
 byte[] raw = Archivum.Get("fileA");
-contentExists = Archivum.TryGet("fileA", out byte[]? bytes);
+resourceExists = Archivum.TryGet("fileA", out byte[]? bytes);
 
 // Image objects from raylib in this example still need to be unloaded :)
 // They're unmanaged, folks!
