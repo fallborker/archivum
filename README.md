@@ -22,7 +22,7 @@ The basic structure of the file is:
  | [8 bytes]    > [Size of the Nth compressed file]
  | [8 bytes]    > [Offset* of the Nth compressed file]
  | [xN bytes]   > [Name/Tag of the Nth compressed file]
- | [y1 bytes]   > [Extension (with '.') of the Nth file]
+ | [yN bytes]   > [Extension (with '.') of the Nth file]
 -----------------------------------------------------------
 | Body
 -----------------------------------------------------------
