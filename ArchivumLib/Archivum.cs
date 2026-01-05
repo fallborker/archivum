@@ -62,7 +62,8 @@ public static class Archivum
         {
             Size = ReadInt64(s),
             Offset = ReadInt64(s),
-            Name = ReadString(s)
+            Name = ReadString(s),
+            Extension = ReadString(s)
         };
     }
 

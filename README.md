@@ -15,12 +15,14 @@ The basic structure of the file is:
  | [8 bytes]    > [Size of the 1st compressed file]
  | [8 bytes]    > [Offset* of the 1st compressed file]
  | [x0 bytes]   > [Name/Tag of the 1st compressed file]
+ | [y0 bytes]   > [Extension (with '.') of the 1st file]
  .
  .
  .
  | [8 bytes]    > [Size of the Nth compressed file]
  | [8 bytes]    > [Offset* of the Nth compressed file]
  | [xN bytes]   > [Name/Tag of the Nth compressed file]
+ | [y1 bytes]   > [Extension (with '.') of the Nth file]
 -----------------------------------------------------------
 | Body
 -----------------------------------------------------------

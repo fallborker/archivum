@@ -49,7 +49,8 @@ internal class ArchivumGenerator
     {
         int totalLen = WriteInt64(s, descriptor.Size)
             + WriteInt64(s, descriptor.Offset)
-            + WriteString(s, descriptor.Name);
+            + WriteString(s, descriptor.Name)
+            + WriteString(s, descriptor.Extension);
 
         return totalLen;
     }
@@ -154,28 +155,29 @@ internal class ArchivumGenerator
                 string prefix = relativeDir == "." ? "" : relativeDir.Replace(Path.DirectorySeparatorChar, '/');
                 string fileName = Path.GetFileNameWithoutExtension(file);
 
-                using (MemoryStream compressed = new MemoryStream())
-                using (GZipStream gzip = new GZipStream(compressed, CompressionLevel.Optimal, leaveOpen: true))
+                long originalPosition = resourceBytes.Position;
+
+                using (GZipStream gzip = new GZipStream(resourceBytes, CompressionLevel.Optimal, leaveOpen: true))
                 {
-                    gzip.Write(File.ReadAllBytes(file));
+                    byte[] fileData = File.ReadAllBytes(file);
 
-                    compressed.Position = 0;
-                    compressed.CopyTo(resourceBytes);
-
-                    long size = compressed.Length;
-
-                    ArchivumDescriptor desc = new ArchivumDescriptor()
-                    {
-                        Name = $"{prefix}{(string.IsNullOrWhiteSpace(prefix) ? "" : "/")}{fileName}",
-                        Size = size,
-                        Offset = offset
-                    };
-
-                    WriteArchivumDescriptor(tableBytes, desc);
-
-                    offset += size;
-                    processedFileCount++;
+                    gzip.Write(fileData);
                 }
+
+                long size = resourceBytes.Position - originalPosition;
+
+                ArchivumDescriptor desc = new ArchivumDescriptor()
+                {
+                    Name = $"{prefix}{(string.IsNullOrWhiteSpace(prefix) ? "" : "/")}{fileName}",
+                    Size = size,
+                    Offset = offset,
+                    Extension = ext
+                };
+
+                WriteArchivumDescriptor(tableBytes, desc);
+
+                offset += size;
+                processedFileCount++;
             }
 
             if (processedFileCount == 0)

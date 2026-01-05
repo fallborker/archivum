@@ -6,7 +6,7 @@
     <Nullable>enable</Nullable>
 
     <PackageId>Archivum</PackageId>
-    <Version>2.1.0</Version>
+    <Version>3.0.0</Version>
     <Authors>Fallbork</Authors>
     <Description>A small reflective library meant to store multiple files in a single one.</Description>
     <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
@@ -16,13 +16,12 @@
     <GeneratePackageOnBuild>true</GeneratePackageOnBuild>
     <IncludeSymbols>true</IncludeSymbols>
     <IncludeSource>true</IncludeSource>
-
   </PropertyGroup>
 
   <PropertyGroup>
     <PackageReleaseNotes>
-      - Added MD5 hash to check if generation is needed. The generation will be skipped if all files are equal.
-      - Updated README.
+      Added an Extension field to the descriptor struct, so methods that depend on it can use that information;
+      Fixed the breaking bug of the file not compressing properly, and resources not loading because of it.
     </PackageReleaseNotes>
   </PropertyGroup>
 
