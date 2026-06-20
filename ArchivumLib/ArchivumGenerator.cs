@@ -1,7 +1,7 @@
 using System.Buffers.Binary;
-using System.Text;
 using System.IO.Compression;
 using System.Security.Cryptography;
+using System.Text;
 using static ArchivumLib.Constants;
 
 namespace ArchivumLib;
@@ -11,7 +11,9 @@ internal class ArchivumGenerator
     private readonly string _source;
     private readonly string _outputFileName;
     private readonly string? _comment;
-    private readonly HashSet<string> _extWhitelist = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> _extWhitelist = new HashSet<string>(
+        StringComparer.OrdinalIgnoreCase
+    );
 
     private int WriteInt32(Stream s, int value)
     {
@@ -48,7 +50,8 @@ internal class ArchivumGenerator
 
     private int WriteArchivumDescriptor(Stream s, ArchivumDescriptor descriptor)
     {
-        int totalLen = WriteInt64(s, descriptor.Size)
+        int totalLen =
+            WriteInt64(s, descriptor.Size)
             + WriteInt64(s, descriptor.Offset)
             + WriteString(s, descriptor.Name)
             + WriteString(s, descriptor.Extension);
@@ -56,7 +59,12 @@ internal class ArchivumGenerator
         return totalLen;
     }
 
-    public ArchivumGenerator(string sourceFolder, string outputFileName, string[] extensionWhitelist, string? comment = null)
+    public ArchivumGenerator(
+        string sourceFolder,
+        string outputFileName,
+        string[] extensionWhitelist,
+        string? comment = null
+    )
     {
         _source = sourceFolder;
         _outputFileName = outputFileName;
@@ -80,7 +88,11 @@ internal class ArchivumGenerator
         try
         {
             StringBuilder hashSource = new StringBuilder();
-            foreach (string file in Directory.EnumerateFiles(_source, "*", SearchOption.AllDirectories).OrderBy(p => p, StringComparer.Ordinal))
+            foreach (
+                string file in Directory
+                    .EnumerateFiles(_source, "*", SearchOption.AllDirectories)
+                    .OrderBy(p => p, StringComparer.Ordinal)
+            )
             {
                 FileInfo fileInfo = new FileInfo(file);
 
@@ -95,7 +107,7 @@ internal class ArchivumGenerator
                 computeHash = md5.ComputeHash(Encoding.UTF8.GetBytes(hashSource.ToString()));
             }
         }
-        catch (Exception _)
+        catch
         {
             Console.WriteLine("Could not calculate the hash due to an exception!");
             throw;
@@ -125,16 +137,20 @@ internal class ArchivumGenerator
                     }
                 }
             }
-            catch (Exception _)
+            catch
             {
-                Console.WriteLine("An internal error occurred while attempting to read the file hash. The file will be forcibly regenerated.");
+                Console.WriteLine(
+                    "An internal error occurred while attempting to read the file hash. The file will be forcibly regenerated."
+                );
                 doNotGenerate = false;
             }
         }
 
         if (doNotGenerate)
         {
-            Console.WriteLine("No changes were detected during the resource file generation. Skipping...");
+            Console.WriteLine(
+                "No changes were detected during the resource file generation. Skipping..."
+            );
             return;
         }
 
@@ -144,7 +160,9 @@ internal class ArchivumGenerator
             long offset = 0;
             int processedFileCount = 0;
 
-            foreach (string file in Directory.EnumerateFiles(_source, "*", SearchOption.AllDirectories))
+            foreach (
+                string file in Directory.EnumerateFiles(_source, "*", SearchOption.AllDirectories)
+            )
             {
                 string ext = Path.GetExtension(file);
                 if (!_extWhitelist.Contains(ext))
@@ -155,12 +173,19 @@ internal class ArchivumGenerator
                 string directory = Path.GetDirectoryName(file)!;
                 string relativeDir = Path.GetRelativePath(_source, directory);
 
-                string prefix = relativeDir == "." ? "" : relativeDir.Replace(Path.DirectorySeparatorChar, '/');
+                string prefix =
+                    relativeDir == "." ? "" : relativeDir.Replace(Path.DirectorySeparatorChar, '/');
                 string fileName = Path.GetFileNameWithoutExtension(file);
 
                 long originalPosition = resourceBytes.Position;
 
-                using (GZipStream gzip = new GZipStream(resourceBytes, CompressionLevel.Optimal, leaveOpen: true))
+                using (
+                    GZipStream gzip = new GZipStream(
+                        resourceBytes,
+                        CompressionLevel.Optimal,
+                        leaveOpen: true
+                    )
+                )
                 {
                     byte[] fileData = File.ReadAllBytes(file);
 
@@ -174,7 +199,7 @@ internal class ArchivumGenerator
                     Name = $"{prefix}{(string.IsNullOrWhiteSpace(prefix) ? "" : "/")}{fileName}",
                     Size = size,
                     Offset = offset,
-                    Extension = ext
+                    Extension = ext,
                 };
 
                 WriteArchivumDescriptor(tableBytes, desc);
