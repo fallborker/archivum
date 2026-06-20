@@ -311,3 +311,6 @@ FodyWeavers.xsd
 .cursor/
 .prompts/
 .windsurf/
+**/AGENTS.md
+**/CLAUDE.md
+**/DESIGN.md
