@@ -67,10 +67,33 @@ public static class Archivum
         };
     }
 
+    internal static void SkipPreamble(Stream fs)
+    {
+        Span<byte> magic = stackalloc byte[MAGIC_SIZE];
+        if (fs.Read(magic) == MAGIC_SIZE && magic.SequenceEqual(Constants.PreambleMagic))
+        {
+            Span<byte> flagsBuf = stackalloc byte[1];
+            fs.ReadExactly(flagsBuf);
+            if ((flagsBuf[0] & 1) != 0)
+            {
+                Span<byte> commentLenBuf = stackalloc byte[INT_SIZE];
+                fs.ReadExactly(commentLenBuf);
+                int commentLen = BinaryPrimitives.ReadInt32LittleEndian(commentLenBuf);
+                fs.Seek(commentLen, SeekOrigin.Current);
+            }
+        }
+        else
+        {
+            fs.Seek(0, SeekOrigin.Begin);
+        }
+    }
+
     private static void LoadResourceInformation()
     {
         using (FileStream fs = File.OpenRead(_fullFileName))
         {
+            SkipPreamble(fs);
+
             // We discard the hash since there's not much use when loading
             fs.ReadExactly(stackalloc byte[HASH_SIZE]);
 
@@ -86,6 +109,33 @@ public static class Archivum
             _ = ReadInt32(fs); // Resource size
 
             _dataOffset = fs.Position;
+        }
+
+        VerifyCrc(_fullFileName);
+    }
+
+    private static void VerifyCrc(string fileName)
+    {
+        using (FileStream fs = File.OpenRead(fileName))
+        {
+            long length = fs.Length;
+            if (length < CRC_SIZE * 2) return;
+
+            fs.Position = length - CRC_SIZE;
+            Span<byte> marker = stackalloc byte[CRC_SIZE];
+            fs.ReadExactly(marker);
+            if (!marker.SequenceEqual(Constants.CrcFooterMagic)) return;
+
+            fs.Position = length - CRC_SIZE * 2;
+            Span<byte> storedBuf = stackalloc byte[CRC_SIZE];
+            fs.ReadExactly(storedBuf);
+            uint storedCrc = BinaryPrimitives.ReadUInt32LittleEndian(storedBuf);
+
+            fs.Position = 0;
+            uint computedCrc = Crc32.Compute(fs, length - CRC_SIZE * 2);
+
+            if (computedCrc != storedCrc)
+                throw new InvalidDataException("Archive CRC check failed. The file may be corrupted.");
         }
     }
 
@@ -166,7 +216,7 @@ public static class Archivum
         {
             byte[] bytes = new byte[descriptor.Size];
 
-            fs.Position = _dataOffset;
+            fs.Position = _dataOffset + descriptor.Offset;
             fs.ReadExactly(bytes, 0, (int)descriptor.Size);
 
             using (MemoryStream compressed = new MemoryStream(bytes))
@@ -207,7 +257,7 @@ public static class Archivum
             throw new ArgumentException("The file name must not be empty!", nameof(fileName));
         }
 
-        if (fileName.IndexOfAny(invalidOSPathChars) > 0 || fileExtension.IndexOfAny(invalidOSPathChars) > 0)
+        if (fileName.IndexOfAny(invalidOSPathChars) >= 0 || fileExtension.IndexOfAny(invalidOSPathChars) >= 0)
         {
             throw new ArgumentException("The file name or its extension must not contain invalid characters!");
         }
@@ -288,11 +338,11 @@ public static class Archivum
         return true;
     }
 
-    public static void Generate(string sourceFolder, string[] extensionWhitelist)
+    public static void Generate(string sourceFolder, string[] extensionWhitelist, string? comment = null)
     {
         CheckSetup();
 
-        ArchivumGenerator generator = new ArchivumGenerator(sourceFolder, _fullFileName, extensionWhitelist);
+        ArchivumGenerator generator = new ArchivumGenerator(sourceFolder, _fullFileName, extensionWhitelist, comment);
         generator.Generate();
     }
 

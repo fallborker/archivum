@@ -10,6 +10,7 @@ internal class ArchivumGenerator
 {
     private readonly string _source;
     private readonly string _outputFileName;
+    private readonly string? _comment;
     private readonly HashSet<string> _extWhitelist = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
     private int WriteInt32(Stream s, int value)
@@ -55,10 +56,11 @@ internal class ArchivumGenerator
         return totalLen;
     }
 
-    public ArchivumGenerator(string sourceFolder, string outputFileName, string[] extensionWhitelist)
+    public ArchivumGenerator(string sourceFolder, string outputFileName, string[] extensionWhitelist, string? comment = null)
     {
         _source = sourceFolder;
         _outputFileName = outputFileName;
+        _comment = comment;
 
         foreach (string ext in extensionWhitelist)
         {
@@ -110,6 +112,7 @@ internal class ArchivumGenerator
             {
                 using (FileStream fs = File.OpenRead(_outputFileName))
                 {
+                    Archivum.SkipPreamble(fs);
                     fs.ReadExactly(buffer);
                 }
 
@@ -187,11 +190,27 @@ internal class ArchivumGenerator
 
             using (FileStream fs = File.Create(_outputFileName))
             {
+                if (_comment != null)
+                {
+                    fs.Write(Constants.PreambleMagic); // magic "ARCH" (raw bytes)
+                    fs.WriteByte(1); // flags: bit 0 = has comment
+                    WriteString(fs, _comment);
+                }
+
                 fs.Write(computeHash, 0, computeHash.Length);
 
                 WriteInt32(fs, processedFileCount);
                 WriteBytes(fs, tableBytes.ToArray());
                 WriteBytes(fs, resourceBytes.ToArray());
+
+                long dataEnd = fs.Position;
+                fs.Position = 0;
+                uint crc = Crc32.Compute(fs, dataEnd);
+                fs.Position = dataEnd;
+                Span<byte> crcBuf = stackalloc byte[CRC_SIZE];
+                BinaryPrimitives.WriteUInt32LittleEndian(crcBuf, crc);
+                fs.Write(crcBuf);
+                fs.Write(Constants.CrcFooterMagic);
             }
 
             Console.WriteLine("Generated the resource file successfuly!");

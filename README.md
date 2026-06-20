@@ -1,10 +1,17 @@
 # Archivum
 
-Archivum is meant to be a small, reflective library that allows you to pack an assortment of files in a single one. The name and extension of the file can be configured to your liking.
+Archivum is meant to be a small, reflective library for C# that allows you to pack an assortment of files in a single one. The name and extension of the file can be configured to your liking.
 
-The basic structure of the file is:
+The basic structure of an Archivum archive file is as follows:
 
 ```
+-----------------------------------------------------------
+| Preamble
+-----------------------------------------------------------
+[4 bytes]       > [Magic marker "ARCH"]
+[1 byte]        > [Flags (bit 0 = has comment)]
+[4 bytes]       > [Byte length of the comment text]   ← only if bit 0 is set
+[C bytes]       > [Comment UTF-8 text]                ← only if bit 0 is set
 -----------------------------------------------------------
 | Header
 -----------------------------------------------------------
@@ -14,14 +21,18 @@ The basic structure of the file is:
 [X bytes]       > [File table]
  | [8 bytes]    > [Size of the 1st compressed file]
  | [8 bytes]    > [Offset* of the 1st compressed file]
- | [x0 bytes]   > [Name/Tag of the 1st compressed file]
+ | [4 bytes]    > [Byte length of the name/tag string]
+ | [x0 bytes]   > [Name/Tag UTF-8 text]
+ | [4 bytes]    > [Byte length of the extension string]
  | [y0 bytes]   > [Extension (with '.') of the 1st file]
  .
  .
  .
  | [8 bytes]    > [Size of the Nth compressed file]
  | [8 bytes]    > [Offset* of the Nth compressed file]
- | [xN bytes]   > [Name/Tag of the Nth compressed file]
+ | [4 bytes]    > [Byte length of the name/tag string]
+ | [xN bytes]   > [Name/Tag UTF-8 text]
+ | [4 bytes]    > [Byte length of the extension string]
  | [yN bytes]   > [Extension (with '.') of the Nth file]
 -----------------------------------------------------------
 | Body
@@ -31,11 +42,17 @@ The basic structure of the file is:
  .
  .
  .
- | [x0 bytes]   > [Nth Compressed file]
+ | [xN bytes]   > [Nth Compressed file]
+ -----------------------------------------------------------
+| CRC Footer**
+-----------------------------------------------------------
+[4 bytes]       > [CRC32 of all preceding bytes]
+[4 bytes]       > [Magic marker "CRCC"]
 EOF
 ```
+> \*: The offset starts counting from 0 at the start of the compressed resource data (right after the 4-byte resource array size). Therefore, Offset is not an absolute file position.
 
-> \*: The offset starts counting from 0 right after the end of the header data. Therefore, Offset is not an absolute value.
+> \*\*: The CRC footer is appended to every generated file. On load, the CRC is verified against all bytes preceding the footer. If the check fails, an `InvalidDataException` is thrown. Archives without a CRC footer (from older versions) load without verification.
 
 ## Setup
 
@@ -130,7 +147,9 @@ To generate a file for the first time, you can wrap the above [setup](#setup) ca
     if (!string.IsNullOrWhiteSpace(input))
     {
         input = input.Replace("\"", "").Replace("'", "").Trim();
-        Archivum.Generate(input, extWhitelist);
+        
+        // The comment is optional!
+        Archivum.Generate(input, extWhitelist, comment: "Archivum archive — generated from Resources folder");
     }
 
 #else
@@ -167,7 +186,7 @@ resourceExists = Archivum.TryGet("fileA", out byte[]? bytes);
 
 This library is licensed to you under the BSD 3-clause license.
 
-## Additional notes
+## Additional notes (original comment)
 
 This project was hacked together in a single saturday, and it is currently 2:52AM on a sunday as I am writing this README because NuGet whines if you dont add one...
 That is to say that this lib is not in a finished state, and I don't really know if it will ever be. I made this for my own enjoyment and published it to see how the process works. Hopefully it is of good use to you, stranger! :D
