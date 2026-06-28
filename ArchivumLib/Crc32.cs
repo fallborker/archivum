@@ -28,7 +28,8 @@ internal static class Crc32
         {
             int toRead = (int)Math.Min(buffer.Length, remaining);
             int read = stream.Read(buffer, 0, toRead);
-            if (read == 0) break;
+            if (read == 0)
+                break;
             for (int i = 0; i < read; i++)
             {
                 crc = Table[(crc ^ buffer[i]) & 0xFF] ^ (crc >> 8);

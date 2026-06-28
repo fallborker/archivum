@@ -1,6 +1,6 @@
 namespace ArchivumLib;
 
-public struct ArchivumDescriptor
+public readonly struct ArchivumDescriptor
 {
     public long Size { get; init; }
     public long Offset { get; init; }

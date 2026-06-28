@@ -3,17 +3,24 @@ using System.IO.Compression;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
+using static ArchivumLib.BinaryIO;
 using static ArchivumLib.Constants;
 
 namespace ArchivumLib;
 
 public static class Archivum
 {
+    private static readonly object _lock = new();
     private static bool _isSetup;
     private static long _dataOffset;
     private static string _fullFileName = "";
-    private static Dictionary<string, ArchivumDescriptor> _table = new Dictionary<string, ArchivumDescriptor>();
-    private static Dictionary<Type, Delegate> _resolverDelegateTable = new Dictionary<Type, Delegate>();
+    private static byte _flags;
+    private static byte[]? _xorKey;
+    private static bool _verifyCrc = true;
+    private static Dictionary<string, ArchivumDescriptor> _table =
+        new Dictionary<string, ArchivumDescriptor>();
+    private static Dictionary<Type, Delegate> _resolverDelegateTable =
+        new Dictionary<Type, Delegate>();
 
     private static void CheckSetup()
     {
@@ -23,39 +30,6 @@ public static class Archivum
         }
     }
 
-    private static int ReadInt32(Stream s)
-    {
-        Span<byte> buf = stackalloc byte[INT_SIZE];
-        s.ReadExactly(buf);
-
-        return BinaryPrimitives.ReadInt32LittleEndian(buf);
-    }
-
-    private static long ReadInt64(Stream s)
-    {
-        Span<byte> buf = stackalloc byte[LONG_SIZE];
-        s.ReadExactly(buf);
-
-        return BinaryPrimitives.ReadInt64LittleEndian(buf);
-    }
-
-    private static byte[] ReadBytes(Stream s)
-    {
-        int totalLen = ReadInt32(s);
-
-        byte[] bytes = new byte[totalLen];
-        s.ReadExactly(bytes);
-
-        return bytes;
-    }
-
-    private static string ReadString(Stream s)
-    {
-        byte[] bytes = ReadBytes(s);
-
-        return Encoding.UTF8.GetString(bytes);
-    }
-
     private static ArchivumDescriptor ReadArchivumDescriptor(Stream s)
     {
         return new ArchivumDescriptor
@@ -63,99 +37,102 @@ public static class Archivum
             Size = ReadInt64(s),
             Offset = ReadInt64(s),
             Name = ReadString(s),
-            Extension = ReadString(s)
+            Extension = ReadString(s),
         };
     }
 
-    internal static void SkipPreamble(Stream fs)
+    private static byte ReadPreamble(Stream fs)
     {
-        Span<byte> magic = stackalloc byte[MAGIC_SIZE];
-        if (fs.Read(magic) == MAGIC_SIZE && magic.SequenceEqual(Constants.PreambleMagic))
+        Span<byte> magic = stackalloc byte[4];
+        fs.ReadExactly(magic);
+
+        if (!magic.SequenceEqual(PreambleMagic))
+            throw new InvalidDataException("Invalid archive file — missing ARCH preamble magic.");
+
+        byte flags = (byte)fs.ReadByte();
+
+        if ((flags & FLAG_COMMENT) != 0)
         {
-            Span<byte> flagsBuf = stackalloc byte[1];
-            fs.ReadExactly(flagsBuf);
-            if ((flagsBuf[0] & 1) != 0)
-            {
-                Span<byte> commentLenBuf = stackalloc byte[INT_SIZE];
-                fs.ReadExactly(commentLenBuf);
-                int commentLen = BinaryPrimitives.ReadInt32LittleEndian(commentLenBuf);
-                fs.Seek(commentLen, SeekOrigin.Current);
-            }
+            int commentLen = ReadInt32(fs);
+            fs.Seek(commentLen, SeekOrigin.Current);
         }
-        else
-        {
-            fs.Seek(0, SeekOrigin.Begin);
-        }
+
+        return flags;
     }
 
     private static void LoadResourceInformation()
     {
         using (FileStream fs = File.OpenRead(_fullFileName))
         {
-            SkipPreamble(fs);
+            _flags = ReadPreamble(fs);
 
-            // We discard the hash since there's not much use when loading
-            fs.ReadExactly(stackalloc byte[HASH_SIZE]);
+            long crcPosition = fs.Position;
 
-            int totalFileCount = ReadInt32(fs);
-            _ = ReadInt32(fs); // Table size in bytes
-
-            for (int i = 0; i < totalFileCount; i++)
+            uint storedCrc = 0;
+            if (_verifyCrc)
             {
-                ArchivumDescriptor desc = ReadArchivumDescriptor(fs);
-                _table.Add(desc.Name, desc);
+                Span<byte> crcBuf = stackalloc byte[CRC_SIZE];
+                fs.ReadExactly(crcBuf);
+                storedCrc = BinaryPrimitives.ReadUInt32LittleEndian(crcBuf);
+            }
+            else
+            {
+                fs.Seek(CRC_SIZE, SeekOrigin.Current);
             }
 
-            _ = ReadInt32(fs); // Resource size
+            Span<byte> hashBuf = stackalloc byte[HASH_SIZE];
+            fs.ReadExactly(hashBuf);
 
+            int totalFileCount = ReadInt32(fs);
+            int tableSize = ReadInt32(fs);
+
+            byte[] tableBytes = new byte[tableSize];
+            fs.ReadExactly(tableBytes);
+
+            if ((_flags & FLAG_OBFUSCATED) != 0)
+            {
+                if (_xorKey == null)
+                    throw new ArchivumSetUpException(
+                        "Archive is obfuscated but no key was provided."
+                    );
+
+                XorBlock(tableBytes, _xorKey!, 8);
+            }
+
+            using (MemoryStream tableStream = new MemoryStream(tableBytes))
+            {
+                for (int i = 0; i < totalFileCount; i++)
+                {
+                    ArchivumDescriptor desc = ReadArchivumDescriptor(tableStream);
+                    _table.Add(desc.Name, desc);
+                }
+            }
+
+            int resourceSize = ReadInt32(fs);
             _dataOffset = fs.Position;
-        }
 
-        VerifyCrc(_fullFileName);
-    }
+            if (_verifyCrc)
+            {
+                fs.Position = crcPosition + CRC_SIZE;
+                long dataEnd = _dataOffset + resourceSize;
+                uint computedCrc = Crc32.Compute(fs, dataEnd - (crcPosition + CRC_SIZE));
 
-    private static void VerifyCrc(string fileName)
-    {
-        using (FileStream fs = File.OpenRead(fileName))
-        {
-            long length = fs.Length;
-            if (length < CRC_SIZE * 2) return;
-
-            fs.Position = length - CRC_SIZE;
-            Span<byte> marker = stackalloc byte[CRC_SIZE];
-            fs.ReadExactly(marker);
-            if (!marker.SequenceEqual(Constants.CrcFooterMagic)) return;
-
-            fs.Position = length - CRC_SIZE * 2;
-            Span<byte> storedBuf = stackalloc byte[CRC_SIZE];
-            fs.ReadExactly(storedBuf);
-            uint storedCrc = BinaryPrimitives.ReadUInt32LittleEndian(storedBuf);
-
-            fs.Position = 0;
-            uint computedCrc = Crc32.Compute(fs, length - CRC_SIZE * 2);
-
-            if (computedCrc != storedCrc)
-                throw new InvalidDataException("Archive CRC check failed. The file may be corrupted.");
-        }
-    }
-
-    private static void LoadResourceInformationIfNotLoaded()
-    {
-        if (_table.Keys.Count == 0)
-        {
-            LoadResourceInformation();
+                if (computedCrc != storedCrc)
+                    throw new InvalidDataException("Archive CRC check failed. The file may be corrupted.");
+            }
         }
     }
 
     private static void CreateResolverDictionary(IArchivumResolver resolver)
     {
-        var methods = resolver.GetType()
+        var methods = resolver
+            .GetType()
             .GetMethods(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic)
             .Where(m =>
-                m.DeclaringType != typeof(object) &&
-                m.GetParameters().Length == 2 &&
-                m.GetParameters()[0].ParameterType == typeof(ArchivumDescriptor) &&
-                m.GetParameters()[1].ParameterType == typeof(byte[])
+                m.DeclaringType != typeof(object)
+                && m.GetParameters().Length == 2
+                && m.GetParameters()[0].ParameterType == typeof(ArchivumDescriptor)
+                && m.GetParameters()[1].ParameterType == typeof(byte[])
             );
 
         foreach (var method in methods)
@@ -164,10 +141,15 @@ public static class Archivum
 
             if (_resolverDelegateTable.ContainsKey(returnType))
             {
-                throw new InvalidOperationException($"Duplicate resolver for type {returnType.Name}");
+                throw new InvalidOperationException(
+                    $"Duplicate resolver for type {returnType.Name}"
+                );
             }
 
-            ParameterExpression descParam = Expression.Parameter(typeof(ArchivumDescriptor), "descriptor");
+            ParameterExpression descParam = Expression.Parameter(
+                typeof(ArchivumDescriptor),
+                "descriptor"
+            );
             ParameterExpression bytesParam = Expression.Parameter(typeof(byte[]), "bytes");
 
             MethodCallExpression call = Expression.Call(
@@ -177,20 +159,35 @@ public static class Archivum
                 bytesParam
             );
 
-            Type funcType = typeof(Func<,,>).MakeGenericType(typeof(ArchivumDescriptor), typeof(byte[]), returnType);
-            Delegate typedDelegate = Expression.Lambda(funcType, call, descParam, bytesParam).Compile();
+            Type funcType = typeof(Func<,,>).MakeGenericType(
+                typeof(ArchivumDescriptor),
+                typeof(byte[]),
+                returnType
+            );
+            Delegate typedDelegate = Expression
+                .Lambda(funcType, call, descParam, bytesParam)
+                .Compile();
 
             _resolverDelegateTable[returnType] = typedDelegate;
         }
 
         {
-            ParameterExpression descParam = Expression.Parameter(typeof(ArchivumDescriptor), "descriptor");
+            ParameterExpression descParam = Expression.Parameter(
+                typeof(ArchivumDescriptor),
+                "descriptor"
+            );
             ParameterExpression bytesParam = Expression.Parameter(typeof(byte[]), "bytes");
 
-            MethodInfo undefinedMethod = resolver.GetType().GetMethod(
-                "ResolveUndefined",
-                BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic
-            ) ?? throw new InvalidOperationException("Resolver must have a ResolveUndefined method");
+            MethodInfo undefinedMethod =
+                resolver
+                    .GetType()
+                    .GetMethod(
+                        "ResolveUndefined",
+                        BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic
+                    )
+                ?? throw new InvalidOperationException(
+                    "Resolver must have a ResolveUndefined method"
+                );
 
             MethodCallExpression call = Expression.Call(
                 Expression.Constant(resolver),
@@ -199,11 +196,9 @@ public static class Archivum
                 bytesParam
             );
 
-            Delegate fallbackDelegate = Expression.Lambda<Func<ArchivumDescriptor, byte[], object>>(
-                call,
-                descParam,
-                bytesParam
-            ).Compile();
+            Delegate fallbackDelegate = Expression
+                .Lambda<Func<ArchivumDescriptor, byte[], object>>(call, descParam, bytesParam)
+                .Compile();
 
             _resolverDelegateTable[typeof(object)] = fallbackDelegate;
         }
@@ -211,147 +206,212 @@ public static class Archivum
 
     private static byte[] UnsafeGet(ArchivumDescriptor descriptor)
     {
-        using (FileStream fs = File.OpenRead(_fullFileName))
-        using (MemoryStream decompressed = new MemoryStream())
+        using FileStream fs = File.OpenRead(_fullFileName);
+        using MemoryStream decompressed = new MemoryStream();
+        byte[] bytes = new byte[descriptor.Size];
+
+        fs.Position = _dataOffset + descriptor.Offset;
+        fs.ReadExactly(bytes, 0, (int)descriptor.Size);
+
+        if ((_flags & FLAG_OBFUSCATED) != 0)
         {
-            byte[] bytes = new byte[descriptor.Size];
-
-            fs.Position = _dataOffset + descriptor.Offset;
-            fs.ReadExactly(bytes, 0, (int)descriptor.Size);
-
-            using (MemoryStream compressed = new MemoryStream(bytes))
-            using (GZipStream gzip = new GZipStream(compressed, CompressionMode.Decompress, leaveOpen: true))
-            {
-                gzip.CopyTo(decompressed);
-            }
-
-            return decompressed.ToArray();
+            XorBlock(bytes, _xorKey!, (int)descriptor.Offset);
         }
+
+        using (MemoryStream compressed = new MemoryStream(bytes))
+        using (
+            GZipStream gzip = new GZipStream(
+                compressed,
+                CompressionMode.Decompress,
+                leaveOpen: true
+            )
+        )
+        {
+            gzip.CopyTo(decompressed);
+        }
+
+        return decompressed.TryGetBuffer(out var buffer)
+            ? buffer.ToArray()
+            : decompressed.ToArray();
     }
 
     private static bool UnsafeTryGet(string name, out byte[]? bytes)
     {
-        if (!_table.ContainsKey(name))
+        if (!_table.TryGetValue(name, out var descriptor))
         {
             bytes = null;
             return false;
         }
 
-        ArchivumDescriptor descriptor = _table[name];
-
         bytes = UnsafeGet(descriptor);
         return true;
     }
 
-    public static void Setup(string fileName, string fileExtension, IArchivumResolver resolver, bool readFileOnSetup = true)
+    public static void Setup(
+        string fileName,
+        string fileExtension,
+        IArchivumResolver resolver,
+        bool readFileOnSetup = true,
+        string? key = null,
+        bool verifyCrc = true
+    )
     {
-        if (_isSetup)
+        lock (_lock)
         {
-            throw new ArchivumSetUpException();
+            if (_isSetup)
+            {
+                throw new ArchivumSetUpException();
+            }
+
+            char[] invalidOSPathChars = Path.GetInvalidFileNameChars();
+
+            if (string.IsNullOrWhiteSpace(fileName))
+            {
+                throw new ArgumentException("The file name must not be empty!", nameof(fileName));
+            }
+
+            if (
+                fileName.IndexOfAny(invalidOSPathChars) >= 0
+                || fileExtension.IndexOfAny(invalidOSPathChars) >= 0
+            )
+            {
+                throw new ArgumentException(
+                    "The file name or its extension must not contain invalid characters!"
+                );
+            }
+
+            string treatedFileName = fileName.Trim();
+            string treatedFileExt = !string.IsNullOrWhiteSpace(fileExtension)
+                ? $".{fileExtension.Trim().Replace(".", "")}"
+                : "";
+
+            _fullFileName = $"{treatedFileName}{treatedFileExt}";
+
+            _xorKey = DeriveKey(key);
+            _verifyCrc = verifyCrc;
+
+            CreateResolverDictionary(resolver);
+
+            if (readFileOnSetup)
+            {
+                LoadResourceInformation();
+            }
+
+            _isSetup = true;
         }
-
-        char[] invalidOSPathChars = Path.GetInvalidFileNameChars();
-
-        if (string.IsNullOrWhiteSpace(fileName))
-        {
-            throw new ArgumentException("The file name must not be empty!", nameof(fileName));
-        }
-
-        if (fileName.IndexOfAny(invalidOSPathChars) >= 0 || fileExtension.IndexOfAny(invalidOSPathChars) >= 0)
-        {
-            throw new ArgumentException("The file name or its extension must not contain invalid characters!");
-        }
-
-        string treatedFileName = fileName.Trim();
-        string treatedFileExt = !string.IsNullOrWhiteSpace(fileExtension) ? $".{fileExtension.Trim().Replace(".", "")}" : "";
-
-        _fullFileName = $"{treatedFileName}{treatedFileExt}";
-
-        CreateResolverDictionary(resolver);
-
-        if (readFileOnSetup)
-        {
-            LoadResourceInformation();
-        }
-
-        _isSetup = true;
     }
 
     public static byte[] Get(string name)
     {
-        CheckSetup();
-        LoadResourceInformationIfNotLoaded();
-
-        if (!_table.ContainsKey(name))
+        lock (_lock)
         {
-            throw new ArgumentException($"The key \"{name}\" does not exist in the resource file!");
+            CheckSetup();
+            if (_table.Count == 0)
+                LoadResourceInformation();
+
+            if (!_table.TryGetValue(name, out var descriptor))
+            {
+                throw new ArgumentException(
+                    $"The key \"{name}\" does not exist in the resource file!"
+                );
+            }
+
+            return UnsafeGet(descriptor);
         }
-
-        ArchivumDescriptor descriptor = _table[name];
-
-        return UnsafeGet(descriptor);
     }
 
     public static bool TryGet(string name, out byte[]? bytes)
     {
-        CheckSetup();
-        LoadResourceInformationIfNotLoaded();
+        lock (_lock)
+        {
+            CheckSetup();
+            if (_table.Count == 0)
+                LoadResourceInformation();
 
-        return UnsafeTryGet(name, out bytes);
+            return UnsafeTryGet(name, out bytes);
+        }
     }
 
     public static T Get<T>(string name)
     {
-        CheckSetup();
-        LoadResourceInformationIfNotLoaded();
-
-        if (!_table.ContainsKey(name))
+        lock (_lock)
         {
-            throw new ArgumentException($"The key \"{name}\" does not exist in the resource file!");
+            CheckSetup();
+            if (_table.Count == 0)
+                LoadResourceInformation();
+
+            if (!_table.TryGetValue(name, out var descriptor))
+            {
+                throw new ArgumentException(
+                    $"The key \"{name}\" does not exist in the resource file!"
+                );
+            }
+
+            byte[] bytes = UnsafeGet(descriptor);
+
+            if (_resolverDelegateTable.TryGetValue(typeof(T), out var typeDelegate))
+            {
+                return ((Func<ArchivumDescriptor, byte[], T>)typeDelegate)(descriptor, bytes);
+            }
+
+            var fallback =
+                (Func<ArchivumDescriptor, byte[], object>)_resolverDelegateTable[typeof(object)];
+            return (T)fallback(descriptor, bytes);
         }
-
-        ArchivumDescriptor descriptor = _table[name];
-
-        byte[] bytes = UnsafeGet(descriptor);
-
-        if (_resolverDelegateTable.TryGetValue(typeof(T), out var typeDelegate))
-        {
-            return ((Func<ArchivumDescriptor, byte[], T>)typeDelegate)(descriptor, bytes);
-        }
-
-        var fallback = (Func<ArchivumDescriptor, byte[], object>)_resolverDelegateTable[typeof(object)];
-        return (T)fallback(descriptor, bytes);
     }
 
     public static bool TryGet<T>(string name, out T? value)
     {
-        CheckSetup();
-        LoadResourceInformationIfNotLoaded();
-
-        if (!_table.ContainsKey(name))
+        lock (_lock)
         {
-            value = default;
-            return false;
-        }
+            CheckSetup();
+            if (_table.Count == 0)
+                LoadResourceInformation();
 
-        value = Get<T>(name);
-        return true;
+            if (!_table.ContainsKey(name))
+            {
+                value = default;
+                return false;
+            }
+
+            value = Get<T>(name);
+            return true;
+        }
     }
 
-    public static void Generate(string sourceFolder, string[] extensionWhitelist, string? comment = null)
+    public static void Generate(
+        string sourceFolder,
+        string[] extensionWhitelist,
+        string? comment = null,
+        string? key = null
+    )
     {
-        CheckSetup();
+        lock (_lock)
+        {
+            CheckSetup();
 
-        ArchivumGenerator generator = new ArchivumGenerator(sourceFolder, _fullFileName, extensionWhitelist, comment);
-        generator.Generate();
+            ArchivumGenerator generator = new ArchivumGenerator(
+                sourceFolder,
+                _fullFileName,
+                extensionWhitelist,
+                key,
+                comment
+            );
+            generator.Generate();
+        }
     }
 
     public static void Reset()
     {
-        _table.Clear();
-        _resolverDelegateTable.Clear();
-        _fullFileName = "";
-        _dataOffset = 0;
-        _isSetup = false;
+        lock (_lock)
+        {
+            _table.Clear();
+            _resolverDelegateTable.Clear();
+            _fullFileName = "";
+            _dataOffset = 0;
+            _flags = 0;
+            _xorKey = null;
+            _isSetup = false;
+        }
     }
 }

@@ -5,7 +5,7 @@
     <Nullable>enable</Nullable>
 
     <PackageId>Archivum</PackageId>
-    <Version>3.1.1</Version>
+    <Version>4.1.0</Version>
     <Authors>Fallbork</Authors>
     <Description>A small reflective library meant to store multiple files in a single one.</Description>
     <PackageLicenseExpression>BSD-3-Clause</PackageLicenseExpression>
@@ -20,14 +20,15 @@
 
   <PropertyGroup>
     <PackageReleaseNotes>
-      Updated repository URL to the new GitHub URL!
-      Fixed UnsafeGet: descriptor.Offset is now added to _dataOffset, fixing multi-file archive reads;
-      Fixed Setup validation: IndexOfAny now uses &gt;= 0 to catch invalid chars at position 0;
-      Added optional plaintext comment preamble (magic "ARCH" + flags + length-prefixed UTF-8 comment);
-      Added CRC32 integrity footer ("CRCC") with automatic verification on load;
-      Refactored preamble-skip logic into shared internal SkipPreamble method;
-      Fixed ReadByte usage for flags byte: replaced with ReadExactly to handle truncated files;
-      Updated README with corrected format diagram, CRC footer section, and comment parameter docs.
+      - Breaking change: complete format overhaul.
+      - Preamble is now mandatory (ARCH + flags + optional comment) on every archive.
+      - Setup() and Generate() accept optional string key parameter.
+      - Added XOR obfuscation: table and body are XORed with SHA256(user key) when a key is provided.
+      - VerifyCrc no longer has silent early returns — CRC is always strictly verified.
+      - Flags byte: bit 0 = has comment, bit 1 = obfuscated.
+      - CRC is now stored at a fixed position in the preamble (right after the optional comment).
+      - CRC covers the Header and Body sections only; any bytes appended past the body are ignored during verification.
+      - Added optional verifyCrc parameter to Setup() (default true) to disable CRC verification when not needed.
     </PackageReleaseNotes>
   </PropertyGroup>
 

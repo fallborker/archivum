@@ -9,9 +9,10 @@ The basic structure of an Archivum archive file is as follows:
 | Preamble
 -----------------------------------------------------------
 [4 bytes]       > [Magic marker "ARCH"]
-[1 byte]        > [Flags (bit 0 = has comment)]
-[4 bytes]       > [Byte length of the comment text]   ← only if bit 0 is set
-[C bytes]       > [Comment UTF-8 text]                ← only if bit 0 is set
+[1 byte]        > [Flags (bit 0 = has comment, bit 1 = obfuscated)]
+[4 bytes]       > [Byte length of the comment text]   < only if bit 0 is set
+[C bytes]       > [Comment UTF-8 text]                < only if bit 0 is set
+[4 bytes]       > [CRC32 of the Header and Body sections**]
 -----------------------------------------------------------
 | Header
 -----------------------------------------------------------
@@ -42,17 +43,12 @@ The basic structure of an Archivum archive file is as follows:
  .
  .
  .
- | [xN bytes]   > [Nth Compressed file]
- -----------------------------------------------------------
-| CRC Footer**
------------------------------------------------------------
-[4 bytes]       > [CRC32 of all preceding bytes]
-[4 bytes]       > [Magic marker "CRCC"]
+  | [xN bytes]   > [Nth Compressed file]
 EOF
 ```
 > \*: The offset starts counting from 0 at the start of the compressed resource data (right after the 4-byte resource array size). Therefore, Offset is not an absolute file position.
 
-> \*\*: The CRC footer is appended to every generated file. On load, the CRC is verified against all bytes preceding the footer. If the check fails, an `InvalidDataException` is thrown. Archives without a CRC footer (from older versions) load without verification.
+> \*\*: The CRC is stored in the preamble and verified against the Header and Body sections. On load, the CRC is verified against those bytes. If the check fails, an `InvalidDataException` is thrown. CRC verification can be disabled by passing `verifyCrc: false` to `Setup()`.
 
 ## Setup
 
@@ -94,7 +90,9 @@ internal class BasicResolver : IArchivumResolver
 // This will load MyResourceFileName.MyCoolExtension from the CWD.
 // The file name is mandatory, but the extension can be left blank by either
 // passing "" or null.
-Archivum.Setup("MyResourceFileName", "MyCoolExtension", new BasicResolver());
+// If the archive was generated with a key, pass the same key here:
+string? myKey = null;
+Archivum.Setup("MyResourceFileName", "MyCoolExtension", new BasicResolver(), key: myKey);
 ```
 
 ## Generation
@@ -102,6 +100,9 @@ Archivum.Setup("MyResourceFileName", "MyCoolExtension", new BasicResolver());
 To generate a file for the first time, you can wrap the above [setup](#setup) call with the following conditional guards. The resource file contains a MD5 hash to check if generation is needed, and this step will be skipped if no file changes are detected.
 
 ```csharp
+// The key is optional — set to your passphrase or leave null for no obfuscation
+string? myKey = null;
+
 #if DEBUG
 
     // The resource file will be read when any get method is
@@ -148,14 +149,14 @@ To generate a file for the first time, you can wrap the above [setup](#setup) ca
     {
         input = input.Replace("\"", "").Replace("'", "").Trim();
         
-        // The comment is optional!
-        Archivum.Generate(input, extWhitelist, comment: "Archivum archive — generated from Resources folder");
+        // The comment and key are optional!
+        Archivum.Generate(input, extWhitelist, comment: "Archivum archive — generated from Resources folder", key: myKey);
     }
 
 #else
 
-    // Do the setup normally!
-    Archivum.Setup("MyResourceFileName", "MyCoolExtension", new BasicResolver());
+    // If you generated with a key, pass it here too
+    Archivum.Setup("MyResourceFileName", "MyCoolExtension", new BasicResolver(), key: myKey);
 
 #endif
 ```

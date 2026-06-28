@@ -2,6 +2,7 @@ using System.Buffers.Binary;
 using System.IO.Compression;
 using System.Security.Cryptography;
 using System.Text;
+using static ArchivumLib.BinaryIO;
 using static ArchivumLib.Constants;
 
 namespace ArchivumLib;
@@ -11,42 +12,8 @@ internal class ArchivumGenerator
     private readonly string _source;
     private readonly string _outputFileName;
     private readonly string? _comment;
-    private readonly HashSet<string> _extWhitelist = new HashSet<string>(
-        StringComparer.OrdinalIgnoreCase
-    );
-
-    private int WriteInt32(Stream s, int value)
-    {
-        Span<byte> buf = stackalloc byte[INT_SIZE];
-        BinaryPrimitives.WriteInt32LittleEndian(buf, value);
-        s.Write(buf);
-
-        return INT_SIZE;
-    }
-
-    private int WriteInt64(Stream s, long value)
-    {
-        Span<byte> buf = stackalloc byte[LONG_SIZE];
-        BinaryPrimitives.WriteInt64LittleEndian(buf, value);
-        s.Write(buf);
-
-        return LONG_SIZE;
-    }
-
-    private int WriteBytes(Stream s, byte[] bytes)
-    {
-        int totalLen = WriteInt32(s, bytes.Length) + bytes.Length;
-        s.Write(bytes);
-
-        return totalLen;
-    }
-
-    private int WriteString(Stream s, string value)
-    {
-        byte[] bytes = Encoding.UTF8.GetBytes(value);
-
-        return WriteBytes(s, bytes);
-    }
+    private readonly byte[]? _xorKey;
+    private readonly HashSet<string> _extWhitelist;
 
     private int WriteArchivumDescriptor(Stream s, ArchivumDescriptor descriptor)
     {
@@ -63,18 +30,18 @@ internal class ArchivumGenerator
         string sourceFolder,
         string outputFileName,
         string[] extensionWhitelist,
+        string? key = null,
         string? comment = null
     )
     {
         _source = sourceFolder;
         _outputFileName = outputFileName;
         _comment = comment;
+        _xorKey = DeriveKey(key);
 
-        foreach (string ext in extensionWhitelist)
-        {
-            string treatedExt = $".{ext.Trim().Replace(".", "")}";
-            _extWhitelist.Add(treatedExt);
-        }
+        _extWhitelist = extensionWhitelist
+            .Select(ext => $".{ext.Trim().Replace(".", "")}")
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
     }
 
     public void Generate()
@@ -83,6 +50,9 @@ internal class ArchivumGenerator
         {
             throw new DirectoryNotFoundException();
         }
+
+        byte BuildFlags() =>
+            (byte)((_comment != null ? FLAG_COMMENT : 0) | (_xorKey != null ? FLAG_OBFUSCATED : 0));
 
         byte[] computeHash;
         try
@@ -102,10 +72,8 @@ internal class ArchivumGenerator
                     .Append(fileInfo.LastWriteTimeUtc);
             }
 
-            using (MD5 md5 = MD5.Create())
-            {
-                computeHash = md5.ComputeHash(Encoding.UTF8.GetBytes(hashSource.ToString()));
-            }
+            using MD5 md5 = MD5.Create();
+            computeHash = md5.ComputeHash(Encoding.UTF8.GetBytes(hashSource.ToString()));
         }
         catch
         {
@@ -122,20 +90,30 @@ internal class ArchivumGenerator
 
             try
             {
+                byte newFlags = BuildFlags();
+
                 using (FileStream fs = File.OpenRead(_outputFileName))
                 {
-                    Archivum.SkipPreamble(fs);
+                    Span<byte> magic = stackalloc byte[4];
+                    fs.ReadExactly(magic);
+
+                    byte oldFlags = (byte)fs.ReadByte();
+
+                    if (oldFlags != newFlags)
+                        doNotGenerate = false;
+
+                    string? oldComment = null;
+                    if ((oldFlags & FLAG_COMMENT) != 0)
+                        oldComment = ReadString(fs);
+
+                    if (doNotGenerate && _comment != oldComment)
+                        doNotGenerate = false;
+
                     fs.ReadExactly(buffer);
                 }
 
-                for (int i = 0; i < HASH_SIZE; i++)
-                {
-                    if (computeHash[i] != buffer[i])
-                    {
-                        doNotGenerate = false;
-                        break;
-                    }
-                }
+                if (doNotGenerate && !computeHash.AsSpan().SequenceEqual(buffer))
+                    doNotGenerate = false;
             }
             catch
             {
@@ -154,91 +132,99 @@ internal class ArchivumGenerator
             return;
         }
 
-        using (MemoryStream resourceBytes = new MemoryStream())
-        using (MemoryStream tableBytes = new MemoryStream())
-        {
-            long offset = 0;
-            int processedFileCount = 0;
+        using MemoryStream resourceBytes = new MemoryStream();
+        using MemoryStream tableBytes = new MemoryStream();
+        long offset = 0;
+        int processedFileCount = 0;
 
-            foreach (
-                string file in Directory.EnumerateFiles(_source, "*", SearchOption.AllDirectories)
-            )
+        var files = Directory
+            .EnumerateFiles(_source, "*", SearchOption.AllDirectories)
+            .Where(file => _extWhitelist.Contains(Path.GetExtension(file)))
+            .Select(file =>
             {
-                string ext = Path.GetExtension(file);
-                if (!_extWhitelist.Contains(ext))
-                {
-                    continue;
-                }
-
                 string directory = Path.GetDirectoryName(file)!;
                 string relativeDir = Path.GetRelativePath(_source, directory);
-
                 string prefix =
                     relativeDir == "." ? "" : relativeDir.Replace(Path.DirectorySeparatorChar, '/');
                 string fileName = Path.GetFileNameWithoutExtension(file);
+                return (Path: file, Prefix: prefix, Name: fileName);
+            });
 
-                long originalPosition = resourceBytes.Position;
+        foreach (var (path, prefix, name) in files)
+        {
+            long originalPosition = resourceBytes.Position;
 
-                using (
-                    GZipStream gzip = new GZipStream(
-                        resourceBytes,
-                        CompressionLevel.Optimal,
-                        leaveOpen: true
-                    )
+            using (
+                GZipStream gzip = new GZipStream(
+                    resourceBytes,
+                    CompressionLevel.Optimal,
+                    leaveOpen: true
                 )
+            )
+            {
+                byte[] fileData = File.ReadAllBytes(path);
+                gzip.Write(fileData);
+            }
+
+            long size = resourceBytes.Position - originalPosition;
+
+            WriteArchivumDescriptor(
+                tableBytes,
+                new ArchivumDescriptor()
                 {
-                    byte[] fileData = File.ReadAllBytes(file);
-
-                    gzip.Write(fileData);
-                }
-
-                long size = resourceBytes.Position - originalPosition;
-
-                ArchivumDescriptor desc = new ArchivumDescriptor()
-                {
-                    Name = $"{prefix}{(string.IsNullOrWhiteSpace(prefix) ? "" : "/")}{fileName}",
+                    Name = $"{prefix}{(prefix == "" ? "" : "/")}{name}",
                     Size = size,
                     Offset = offset,
-                    Extension = ext,
-                };
-
-                WriteArchivumDescriptor(tableBytes, desc);
-
-                offset += size;
-                processedFileCount++;
-            }
-
-            if (processedFileCount == 0)
-            {
-                return;
-            }
-
-            using (FileStream fs = File.Create(_outputFileName))
-            {
-                if (_comment != null)
-                {
-                    fs.Write(Constants.PreambleMagic); // magic "ARCH" (raw bytes)
-                    fs.WriteByte(1); // flags: bit 0 = has comment
-                    WriteString(fs, _comment);
+                    Extension = Path.GetExtension(path),
                 }
+            );
 
-                fs.Write(computeHash, 0, computeHash.Length);
+            offset += size;
+            processedFileCount++;
+        }
 
-                WriteInt32(fs, processedFileCount);
-                WriteBytes(fs, tableBytes.ToArray());
-                WriteBytes(fs, resourceBytes.ToArray());
+        if (processedFileCount == 0)
+        {
+            return;
+        }
 
-                long dataEnd = fs.Position;
-                fs.Position = 0;
-                uint crc = Crc32.Compute(fs, dataEnd);
-                fs.Position = dataEnd;
-                Span<byte> crcBuf = stackalloc byte[CRC_SIZE];
-                BinaryPrimitives.WriteUInt32LittleEndian(crcBuf, crc);
-                fs.Write(crcBuf);
-                fs.Write(Constants.CrcFooterMagic);
+        using (FileStream fs = File.Create(_outputFileName))
+        {
+            byte flags = BuildFlags();
+
+            fs.Write(PreambleMagic);
+            fs.WriteByte(flags);
+
+            if (_comment != null)
+                WriteString(fs, _comment);
+
+            long crcPosition = fs.Position;
+            Span<byte> crcBuf = stackalloc byte[CRC_SIZE];
+            fs.Write(crcBuf);
+
+            fs.Write(computeHash, 0, computeHash.Length);
+
+            byte[] rawTable = tableBytes.ToArray();
+            byte[] rawBody = resourceBytes.ToArray();
+
+            if (_xorKey != null)
+            {
+                XorBlock(rawTable, _xorKey, 8);
+                XorBlock(rawBody, _xorKey, 0);
             }
 
-            Console.WriteLine("Generated the resource file successfuly!");
+            WriteInt32(fs, processedFileCount);
+            WriteBytes(fs, rawTable);
+            WriteBytes(fs, rawBody);
+
+            long dataEnd = fs.Position;
+            fs.Position = crcPosition + CRC_SIZE;
+            uint crc = Crc32.Compute(fs, dataEnd - (crcPosition + CRC_SIZE));
+            fs.Position = crcPosition;
+            BinaryPrimitives.WriteUInt32LittleEndian(crcBuf, crc);
+            fs.Write(crcBuf);
         }
+
+        Console.WriteLine("Generated the resource file successfully!");
     }
 }
