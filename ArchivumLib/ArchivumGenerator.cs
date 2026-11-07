@@ -7,13 +7,18 @@ using static ArchivumLib.Constants;
 
 namespace ArchivumLib;
 
-internal class ArchivumGenerator
+internal class ArchivumGenerator(
+    string sourceFolder,
+    string outputFileName,
+    string[] extensionWhitelist,
+    string? key = null,
+    string? comment = null
+)
 {
-    private readonly string _source;
-    private readonly string _outputFileName;
-    private readonly string? _comment;
-    private readonly byte[]? _xorKey;
-    private readonly HashSet<string> _extWhitelist;
+    private readonly byte[]? _xorKey = DeriveKey(key);
+    private readonly HashSet<string> _extWhitelist = extensionWhitelist
+        .Select(ext => $".{ext.Trim().Replace(".", "")}")
+        .ToHashSet(StringComparer.OrdinalIgnoreCase);
 
     private int WriteArchivumDescriptor(Stream s, ArchivumDescriptor descriptor)
     {
@@ -26,45 +31,27 @@ internal class ArchivumGenerator
         return totalLen;
     }
 
-    public ArchivumGenerator(
-        string sourceFolder,
-        string outputFileName,
-        string[] extensionWhitelist,
-        string? key = null,
-        string? comment = null
-    )
-    {
-        _source = sourceFolder;
-        _outputFileName = outputFileName;
-        _comment = comment;
-        _xorKey = DeriveKey(key);
-
-        _extWhitelist = extensionWhitelist
-            .Select(ext => $".{ext.Trim().Replace(".", "")}")
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-    }
-
     public void Generate()
     {
-        if (!Path.Exists(_source))
+        if (!Path.Exists(sourceFolder))
         {
             throw new DirectoryNotFoundException();
         }
 
         byte BuildFlags() =>
-            (byte)((_comment != null ? FLAG_COMMENT : 0) | (_xorKey != null ? FLAG_OBFUSCATED : 0));
+            (byte)((comment != null ? FLAG_COMMENT : 0) | (_xorKey != null ? FLAG_OBFUSCATED : 0));
 
         byte[] computeHash;
         try
         {
-            StringBuilder hashSource = new StringBuilder();
+            var hashSource = new StringBuilder();
             foreach (
                 string file in Directory
-                    .EnumerateFiles(_source, "*", SearchOption.AllDirectories)
+                    .EnumerateFiles(sourceFolder, "*", SearchOption.AllDirectories)
                     .OrderBy(p => p, StringComparer.Ordinal)
             )
             {
-                FileInfo fileInfo = new FileInfo(file);
+                var fileInfo = new FileInfo(file);
 
                 hashSource
                     .Append(fileInfo.FullName)
@@ -72,7 +59,7 @@ internal class ArchivumGenerator
                     .Append(fileInfo.LastWriteTimeUtc);
             }
 
-            using MD5 md5 = MD5.Create();
+            using var md5 = MD5.Create();
             computeHash = md5.ComputeHash(Encoding.UTF8.GetBytes(hashSource.ToString()));
         }
         catch
@@ -81,8 +68,10 @@ internal class ArchivumGenerator
             throw;
         }
 
+        string fullOutputFilePath = Path.Combine(AppContext.BaseDirectory, outputFileName);
+
         // If a file already exists and we're changing it, we must first check if any changes are necessary.
-        bool fileExists = File.Exists(_outputFileName);
+        bool fileExists = File.Exists(fullOutputFilePath);
         bool doNotGenerate = fileExists;
         if (fileExists)
         {
@@ -92,7 +81,7 @@ internal class ArchivumGenerator
             {
                 byte newFlags = BuildFlags();
 
-                using (FileStream fs = File.OpenRead(_outputFileName))
+                using (var fs = File.OpenRead(fullOutputFilePath))
                 {
                     Span<byte> magic = stackalloc byte[4];
                     fs.ReadExactly(magic);
@@ -106,7 +95,7 @@ internal class ArchivumGenerator
                     if ((oldFlags & FLAG_COMMENT) != 0)
                         oldComment = ReadString(fs);
 
-                    if (doNotGenerate && _comment != oldComment)
+                    if (doNotGenerate && comment != oldComment)
                         doNotGenerate = false;
 
                     fs.ReadExactly(buffer);
@@ -132,18 +121,18 @@ internal class ArchivumGenerator
             return;
         }
 
-        using MemoryStream resourceBytes = new MemoryStream();
-        using MemoryStream tableBytes = new MemoryStream();
+        using var resourceBytes = new MemoryStream();
+        using var tableBytes = new MemoryStream();
         long offset = 0;
         int processedFileCount = 0;
 
         var files = Directory
-            .EnumerateFiles(_source, "*", SearchOption.AllDirectories)
+            .EnumerateFiles(sourceFolder, "*", SearchOption.AllDirectories)
             .Where(file => _extWhitelist.Contains(Path.GetExtension(file)))
             .Select(file =>
             {
                 string directory = Path.GetDirectoryName(file)!;
-                string relativeDir = Path.GetRelativePath(_source, directory);
+                string relativeDir = Path.GetRelativePath(sourceFolder, directory);
                 string prefix =
                     relativeDir == "." ? "" : relativeDir.Replace(Path.DirectorySeparatorChar, '/');
                 string fileName = Path.GetFileNameWithoutExtension(file);
@@ -155,11 +144,7 @@ internal class ArchivumGenerator
             long originalPosition = resourceBytes.Position;
 
             using (
-                GZipStream gzip = new GZipStream(
-                    resourceBytes,
-                    CompressionLevel.Optimal,
-                    leaveOpen: true
-                )
+                var gzip = new GZipStream(resourceBytes, CompressionLevel.Optimal, leaveOpen: true)
             )
             {
                 byte[] fileData = File.ReadAllBytes(path);
@@ -188,15 +173,15 @@ internal class ArchivumGenerator
             return;
         }
 
-        using (FileStream fs = File.Create(_outputFileName))
+        using (var fs = File.Create(fullOutputFilePath))
         {
             byte flags = BuildFlags();
 
             fs.Write(PreambleMagic);
             fs.WriteByte(flags);
 
-            if (_comment != null)
-                WriteString(fs, _comment);
+            if (comment != null)
+                WriteString(fs, comment);
 
             long crcPosition = fs.Position;
             Span<byte> crcBuf = stackalloc byte[CRC_SIZE];

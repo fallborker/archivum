@@ -2,7 +2,6 @@
 using System.IO.Compression;
 using System.Linq.Expressions;
 using System.Reflection;
-using System.Text;
 using static ArchivumLib.BinaryIO;
 using static ArchivumLib.Constants;
 
@@ -14,12 +13,13 @@ public static class Archivum
     private static bool _isSetup;
     private static long _dataOffset;
     private static string _fullFileName = "";
+    private static string _fullFilePath = "";
     private static byte _flags;
     private static byte[]? _xorKey;
     private static bool _verifyCrc = true;
-    private static Dictionary<string, ArchivumDescriptor> _table =
+    private static readonly Dictionary<string, ArchivumDescriptor> _table =
         new Dictionary<string, ArchivumDescriptor>();
-    private static Dictionary<Type, Delegate> _resolverDelegateTable =
+    private static readonly Dictionary<Type, Delegate> _resolverDelegateTable =
         new Dictionary<Type, Delegate>();
 
     private static void CheckSetup()
@@ -62,7 +62,7 @@ public static class Archivum
 
     private static void LoadResourceInformation()
     {
-        using (FileStream fs = File.OpenRead(_fullFileName))
+        using (var fs = File.OpenRead(_fullFilePath))
         {
             _flags = ReadPreamble(fs);
 
@@ -99,11 +99,11 @@ public static class Archivum
                 XorBlock(tableBytes, _xorKey!, 8);
             }
 
-            using (MemoryStream tableStream = new MemoryStream(tableBytes))
+            using (var tableStream = new MemoryStream(tableBytes))
             {
                 for (int i = 0; i < totalFileCount; i++)
                 {
-                    ArchivumDescriptor desc = ReadArchivumDescriptor(tableStream);
+                    var desc = ReadArchivumDescriptor(tableStream);
                     _table.Add(desc.Name, desc);
                 }
             }
@@ -118,7 +118,9 @@ public static class Archivum
                 uint computedCrc = Crc32.Compute(fs, dataEnd - (crcPosition + CRC_SIZE));
 
                 if (computedCrc != storedCrc)
-                    throw new InvalidDataException("Archive CRC check failed. The file may be corrupted.");
+                    throw new InvalidDataException(
+                        "Archive CRC check failed. The file may be corrupted."
+                    );
             }
         }
     }
@@ -146,39 +148,31 @@ public static class Archivum
                 );
             }
 
-            ParameterExpression descParam = Expression.Parameter(
-                typeof(ArchivumDescriptor),
-                "descriptor"
-            );
-            ParameterExpression bytesParam = Expression.Parameter(typeof(byte[]), "bytes");
+            var descParam = Expression.Parameter(typeof(ArchivumDescriptor), "descriptor");
+            var bytesParam = Expression.Parameter(typeof(byte[]), "bytes");
 
-            MethodCallExpression call = Expression.Call(
+            var call = Expression.Call(
                 Expression.Constant(resolver), // instance
                 method,
                 descParam,
                 bytesParam
             );
 
-            Type funcType = typeof(Func<,,>).MakeGenericType(
+            var funcType = typeof(Func<,,>).MakeGenericType(
                 typeof(ArchivumDescriptor),
                 typeof(byte[]),
                 returnType
             );
-            Delegate typedDelegate = Expression
-                .Lambda(funcType, call, descParam, bytesParam)
-                .Compile();
+            var typedDelegate = Expression.Lambda(funcType, call, descParam, bytesParam).Compile();
 
             _resolverDelegateTable[returnType] = typedDelegate;
         }
 
         {
-            ParameterExpression descParam = Expression.Parameter(
-                typeof(ArchivumDescriptor),
-                "descriptor"
-            );
-            ParameterExpression bytesParam = Expression.Parameter(typeof(byte[]), "bytes");
+            var descParam = Expression.Parameter(typeof(ArchivumDescriptor), "descriptor");
+            var bytesParam = Expression.Parameter(typeof(byte[]), "bytes");
 
-            MethodInfo undefinedMethod =
+            var undefinedMethod =
                 resolver
                     .GetType()
                     .GetMethod(
@@ -189,7 +183,7 @@ public static class Archivum
                     "Resolver must have a ResolveUndefined method"
                 );
 
-            MethodCallExpression call = Expression.Call(
+            var call = Expression.Call(
                 Expression.Constant(resolver),
                 undefinedMethod,
                 descParam,
@@ -206,8 +200,8 @@ public static class Archivum
 
     private static byte[] UnsafeGet(ArchivumDescriptor descriptor)
     {
-        using FileStream fs = File.OpenRead(_fullFileName);
-        using MemoryStream decompressed = new MemoryStream();
+        using var fs = File.OpenRead(_fullFilePath);
+        using var decompressed = new MemoryStream();
         byte[] bytes = new byte[descriptor.Size];
 
         fs.Position = _dataOffset + descriptor.Offset;
@@ -218,14 +212,8 @@ public static class Archivum
             XorBlock(bytes, _xorKey!, (int)descriptor.Offset);
         }
 
-        using (MemoryStream compressed = new MemoryStream(bytes))
-        using (
-            GZipStream gzip = new GZipStream(
-                compressed,
-                CompressionMode.Decompress,
-                leaveOpen: true
-            )
-        )
+        using (var compressed = new MemoryStream(bytes))
+        using (var gzip = new GZipStream(compressed, CompressionMode.Decompress, leaveOpen: true))
         {
             gzip.CopyTo(decompressed);
         }
@@ -286,6 +274,7 @@ public static class Archivum
                 : "";
 
             _fullFileName = $"{treatedFileName}{treatedFileExt}";
+            _fullFilePath = Path.Combine(AppContext.BaseDirectory, _fullFileName);
 
             _xorKey = DeriveKey(key);
             _verifyCrc = verifyCrc;
@@ -309,14 +298,11 @@ public static class Archivum
             if (_table.Count == 0)
                 LoadResourceInformation();
 
-            if (!_table.TryGetValue(name, out var descriptor))
-            {
-                throw new ArgumentException(
+            return !_table.TryGetValue(name, out var descriptor)
+                ? throw new ArgumentException(
                     $"The key \"{name}\" does not exist in the resource file!"
-                );
-            }
-
-            return UnsafeGet(descriptor);
+                )
+                : UnsafeGet(descriptor);
         }
     }
 
@@ -390,7 +376,7 @@ public static class Archivum
         {
             CheckSetup();
 
-            ArchivumGenerator generator = new ArchivumGenerator(
+            var generator = new ArchivumGenerator(
                 sourceFolder,
                 _fullFileName,
                 extensionWhitelist,
@@ -408,6 +394,7 @@ public static class Archivum
             _table.Clear();
             _resolverDelegateTable.Clear();
             _fullFileName = "";
+            _fullFilePath = "";
             _dataOffset = 0;
             _flags = 0;
             _xorKey = null;
